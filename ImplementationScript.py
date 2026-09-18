@@ -231,11 +231,25 @@ class Prtg:
         # Never scrape the id out of the redirect: on success it can land on the
         # device page, and naming that id renames the DEVICE. Diff the device's
         # sensors instead.
-        added = self.sensor_ids(device_id) - before
+        #
+        # The diff has to be retried. table.json can serve a cached tree that
+        # does not yet list a sensor the core has just created, so a single read
+        # reports "gained no sensors" for a sensor that exists and is already
+        # scanning. Believing that leaves the sensor behind under the wizard's
+        # default name, which later re-runs do not match and so duplicate.
+        added = set()
+        for attempt in range(6):
+            added = self.sensor_ids(device_id) - before
+            if added:
+                break
+            time.sleep(3)
         if len(added) != 1:
-            return None, ("created, but could not identify the new sensor "
-                          "(device {} gained {} sensors); name it by hand and "
-                          "check for duplicates".format(device_id, len(added) or "no"))
+            return None, ("created, but could not identify the new sensor after "
+                          "{} reads (device {} gained {}); it is probably there "
+                          "under the default name 'Script v2: <script>' -- find it "
+                          "and rename it rather than re-running, which would "
+                          "duplicate it".format(attempt + 1, device_id,
+                                                "{} sensors".format(len(added)) if added else "none"))
         nid = added.pop()
         self.setprop(nid, "name", name)  # name_ in the wizard does not stick
         return nid, u2
