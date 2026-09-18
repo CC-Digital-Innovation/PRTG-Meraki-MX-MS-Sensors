@@ -112,6 +112,7 @@ Drop `--dry-run` and answer `y` to create. Each run writes a timestamped `Implem
 | `--sensors` | Comma-separated subset of `device_utilization,wan_status,wan_traffic,port_status` (default all) |
 | `--only-serials` / `--skip-serials` | Scope to specific appliances: comma-separated, or `@path` to a file of serials |
 | `--key-placeholder N` | Which Script Sensors slot holds the key (default 1) |
+| `--interval` | Scan interval, set after creation (default `300\|5 minutes`) |
 | `--util-warn` / `--util-error` | Utilization limits at creation time |
 | `--sensor-type` | Override the sensor-type token, normally read from the core |
 
