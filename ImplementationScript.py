@@ -181,7 +181,13 @@ class Prtg:
                 return t
         return None
 
+    def sensor_ids(self, device_id):
+        """Set of sensor ids currently on a device."""
+        return {str(s.get("objid")) for s in self.table(
+            "sensors", "objid", extra="&id={}".format(device_id), count=5000)}
+
     def create_scriptv2(self, device_id, name, script, params, stype, tag):
+        before = self.sensor_ids(device_id)
         u, _ = self._open("{}/controls/addsensor3.htm?id={}&sensortype={}".format(
             self.base, device_id, stype))
         m = re.search(r'tmpid=(\d+)', u)
@@ -222,10 +228,16 @@ class Prtg:
                 r'(Please select a value|This field is required|'
                 r'no sensors could be created|session expired)', body2)
             return None, "not created: {}".format(sorted(set(errs)) or u2)
-        m = re.search(r'id=(\d+)', u2)
-        nid = m.group(1) if m else None
-        if nid:
-            self.setprop(nid, "name", name)  # name_ in the wizard does not stick
+        # Never scrape the id out of the redirect: on success it can land on the
+        # device page, and naming that id renames the DEVICE. Diff the device's
+        # sensors instead.
+        added = self.sensor_ids(device_id) - before
+        if len(added) != 1:
+            return None, ("created, but could not identify the new sensor "
+                          "(device {} gained {} sensors); name it by hand and "
+                          "check for duplicates".format(device_id, len(added) or "no"))
+        nid = added.pop()
+        self.setprop(nid, "name", name)  # name_ in the wizard does not stick
         return nid, u2
 
     def _post_multipart(self, url, fields):
