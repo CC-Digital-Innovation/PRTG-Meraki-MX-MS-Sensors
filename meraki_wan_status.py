@@ -8,7 +8,7 @@ status call; its history is the WAN connection-loss record, which is separate
 from packet loss.
 
 Parameters (the PRTG Script v2 "Parameters" field, delivered on stdin):
-  --serial <MX> --uplink wan1|wan2 --ip 8.8.8.8 [--api-key %windowspassword]
+  --serial <MX> --uplink wan1|wan2 --ip 8.8.8.8 [--api-key %scriptplaceholder1]
   [--org-id <org-id>] [--loss-warn 2] [--loss-error 3]
   [--lat-warn 150] [--lat-error 300] [--splay N]
 

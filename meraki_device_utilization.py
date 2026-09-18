@@ -16,7 +16,7 @@ than as a failure:
   pair. Only the active unit carries a perfScore; monitor the primary.
 
 Parameters (the PRTG Script v2 "Parameters" field, delivered on stdin):
-  --serial <MX> [--api-key %windowspassword]
+  --serial <MX> [--api-key %scriptplaceholder1]
   [--util-warn 75] [--util-error 90] [--splay N]
   [--idle-status ok|warning]
 

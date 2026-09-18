@@ -8,7 +8,7 @@ in a full hour is under the floor, the sensor goes to error. This is a useful
 detector for SD-WAN flow-preference problems that quietly idle an uplink.
 
 Parameters (the PRTG Script v2 "Parameters" field, delivered on stdin):
-  --network-id <NET> [--api-key %windowspassword] [--uplink both|wan1|wan2]
+  --network-id <NET> [--api-key %scriptplaceholder1] [--uplink both|wan1|wan2]
   [--floor-out-wan2 3.0]  (Mbit/s; default 3.0; 0 disables)
   [--floor-in-wan2 N] [--floor-out-wan1 N] [--floor-in-wan1 N] [--splay N]
 

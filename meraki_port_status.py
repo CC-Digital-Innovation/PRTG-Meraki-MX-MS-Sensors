@@ -12,7 +12,7 @@ down if it is in the alarm set:
   globs, or an explicit --alert-ports list.
 
 Parameters (the PRTG Script v2 "Parameters" field, delivered on stdin):
-  --serial <SW> [--api-key %windowspassword] [--alert-mode active]
+  --serial <SW> [--api-key %scriptplaceholder1] [--alert-mode active]
   [--lookback-hours 24] [--alert-tag prtg-alarm] [--alert-labels "UPLINK*"]
   [--alert-ports 1,2] [--splay N]
 
