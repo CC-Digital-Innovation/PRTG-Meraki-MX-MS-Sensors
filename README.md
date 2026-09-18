@@ -58,6 +58,8 @@ Never put the key in the Parameters field directly; anyone who can read the sens
 
 Common to every script: `--api-key` (or `MERAKI_API_KEY`) and `--splay N`, a random 0..N second start delay that de-aligns bursts when many sensors share a scan interval.
 
+The splay is slept inside the script, so it is spent against the sensor's own timeout. `ImplementationScript.py` sets the timeout to `splay + 60` for this reason. Setting a large splay by hand on a sensor left at the 60 s default makes every scan a lottery -- the runs that draw a high delay are killed and report no data, which looks like a broken sensor rather than a short budget.
+
 | Script | Parameters |
 |---|---|
 | `meraki_device_utilization.py` | `--serial`, `--util-warn` (75), `--util-error` (90), `--idle-status` (`ok`\|`warning`) |

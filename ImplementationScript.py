@@ -186,7 +186,7 @@ class Prtg:
         return {str(s.get("objid")) for s in self.table(
             "sensors", "objid", extra="&id={}".format(device_id), count=5000)}
 
-    def create_scriptv2(self, device_id, name, script, params, stype, tag):
+    def create_scriptv2(self, device_id, name, script, params, stype, tag, timeout="60"):
         before = self.sensor_ids(device_id)
         u, _ = self._open("{}/controls/addsensor3.htm?id={}&sensortype={}".format(
             self.base, device_id, stype))
@@ -215,7 +215,7 @@ class Prtg:
         f["paessler-exe-exe_metascan_section-exe_metascan_group-exe_type"] = "Python"
         f["name_"] = name
         f["paessler-exe-exe_section-exe_group-parameters_"] = params
-        f["paessler-exe-exe_section-exe_group-timeout_"] = "60"
+        f["paessler-exe-exe_section-exe_group-timeout_"] = str(timeout)
         f["id"] = str(device_id)
         f["tmpid"] = str(tmpid)
         tags = f.get("tags_", "exesensor")
@@ -442,6 +442,14 @@ def main():
     only = serial_set(a.only_serials)
     skip = serial_set(a.skip_serials) or set()
     keyref = "%scriptplaceholder{}".format(a.key_placeholder)
+
+    # --splay sleeps inside the script, so it is spent against the sensor's own
+    # timeout. A splay near the timeout makes every scan a lottery: the runs
+    # that draw a high delay are killed and report no data at all, which reads
+    # like a broken sensor rather than a too-short budget.
+    script_timeout = int(float(a.splay)) + 60
+    log("script timeout {}s (splay up to {}s + 60s of headroom)".format(
+        script_timeout, a.splay))
     log("sensor kinds: {}".format(", ".join(sorted(want))))
     log("API key referenced as {} (Credentials for Script Sensors)".format(keyref))
     if only:
@@ -540,7 +548,8 @@ def main():
 
     created = failed = 0
     for pd, name, script, params in todo:
-        sid, info = prtg.create_scriptv2(pd["objid"], name, script, params, stype, a.tag)
+        sid, info = prtg.create_scriptv2(pd["objid"], name, script, params, stype, a.tag,
+                                         timeout=script_timeout)
         if sid:
             created += 1
             if a.interval:
