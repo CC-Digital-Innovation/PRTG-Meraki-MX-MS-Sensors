@@ -351,6 +351,10 @@ def main():
     p.add_argument("--floor-out-wan2", default="3.0",
                    help="WAN2 out-peak floor in Mbit/s for the traffic sensor (default 3.0)")
     p.add_argument("--splay", default="5")
+    p.add_argument("--interval", default="300|5 minutes",
+                   help="scan interval, set after creation (default '300|5 minutes'). "
+                        "Utilization moves slowly; the 60 s wizard default is five times "
+                        "the Meraki API calls for no extra signal. Empty to leave as created.")
     p.add_argument("--key-placeholder", default="1", choices=["1", "2", "3", "4", "5"],
                    help="which 'Credentials for Script Sensors' placeholder slot holds the "
                         "Meraki API key (default 1, referenced as %%scriptplaceholder1)")
@@ -525,6 +529,8 @@ def main():
         sid, info = prtg.create_scriptv2(pd["objid"], name, script, params, stype, a.tag)
         if sid:
             created += 1
+            if a.interval:
+                prtg.setprop(sid, "interval", a.interval)
             log("created id={} {}".format(sid, name))
         else:
             failed += 1
