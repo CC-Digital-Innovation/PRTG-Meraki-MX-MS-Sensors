@@ -2,3 +2,6 @@ __pycache__/
 *.pyc
 *.pyo
 ImplementationScript_*.log
+
+# run logs from the sensor creation script
+create_scriptv2_*.log

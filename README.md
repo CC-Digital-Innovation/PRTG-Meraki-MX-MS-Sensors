@@ -34,7 +34,7 @@ curl -sk "https://<prtg>/api/sensortypes.json?id=<device-id>&username=<user>&pas
   | grep -o '"id": "paessler.exe.exe_sensor"'
 ```
 
-The `id=` matters. Without it the endpoint returns a shorter legacy catalogue that omits the newer sensor types, which reads like an unsupported core rather than a malformed question.
+The `id=` matters. Without it the endpoint returns a shorter legacy catalog that omits the newer sensor types, which reads like an unsupported core rather than a malformed question.
 
 ## Install
 
@@ -122,9 +122,20 @@ Drop `--dry-run` and answer `y` to create. Each run writes a timestamped `Implem
 
 ## Notes
 
-- The Meraki API allows 10 requests per second per organization. Every script retries HTTP 429 honouring `Retry-After`; `--splay` keeps a large fleet from bursting.
+- The Meraki API allows 10 requests per second per organization. Every script retries HTTP 429 honoring `Retry-After`; `--splay` keeps a large fleet from bursting.
 - The API key needs read access only.
 - Channel ids start at 10; 0-9 are reserved by the Script v2 runtime.
+- Each channel id comes from the port id, not its position in the response:
+  `99 + N` for a numeric port, a hashed id above 1000 for a modular one.
+  PRTG keys history to the channel id, so an id that shifts when a module is added
+  or removed hands one port's history to another. Ports 1..48 land on 100..147,
+  which is what the earlier positional numbering produced, so sensors already
+  deployed keep their history and their channel names.
+- Meraki says a `portId` is "commonly just the port number" but "may contain
+  additional identifying information such as the slot and module-type if the port
+  is located on a port module". Modular hardware (MS390, C9300, and MS425 flexible
+  stacking) returns ids like `1_MA-MOD-8X10G_1`, which are sorted naturally and
+  shown verbatim.
 
 ## Related projects
 

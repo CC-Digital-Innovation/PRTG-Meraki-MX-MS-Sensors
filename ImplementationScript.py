@@ -85,7 +85,7 @@ def log(msg):
 def meraki_get(key, path, tries=5):
     """GET a Meraki endpoint, following Link pagination. Returns a list or dict.
 
-    Retries on 429 honouring Retry-After. A full walk of a large organization
+    Retries on 429 honoring Retry-After. A full walk of a large organization
     is one call per network, which runs into the org rate limit on its own.
     """
     url = MERAKI_BASE + path
@@ -152,7 +152,7 @@ class Prtg:
         """Sensor types the core offers on one device.
 
         sensortypes.json must be asked about a specific device. Called without
-        an id it answers with a shorter legacy catalogue that leaves out the
+        an id it answers with a shorter legacy catalog that leaves out the
         newer sensors, Script v2 among them -- so a bare call looks exactly
         like a core that cannot run these sensors at all.
         """

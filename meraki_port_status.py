@@ -23,6 +23,8 @@ import sys
 import json
 import time
 import random
+import re
+import zlib
 import fnmatch
 import argparse
 import urllib.request
@@ -32,6 +34,50 @@ import urllib.error
 from prtg_out import emit, fail, chan, read_args, clean
 
 API_BASE = "https://api.meraki.com/api/v1"
+
+# Meraki documents portId as "commonly just the port number", but it "may
+# contain additional identifying information such as the slot and module-type
+# if the port is located on a port module" -- so int(portId) is not safe. It
+# raises on modular hardware (MS390/C9300 line cards, MS425 flexible stacking),
+# and an uncaught ValueError leaves the probe with a Python traceback instead
+# of a Script v2 result, which reads as a broken sensor rather than a port id
+# the script could not parse.
+#
+# Channel ids have to stay put for the life of a sensor: PRTG stores history
+# against the id, so an id that moves reattributes one port's history to
+# another. A numeric port takes 99 + its number, which is what enumeration
+# produced for the usual contiguous 1..N switch, so sensors already deployed
+# keep their history. Anything non-numeric takes a hashed id in a band above.
+_MODULAR_BASE, _MODULAR_SPAN = 1000, 8000
+
+
+def port_sort_key(port_id):
+    """Natural order: port 2 before port 10, and modular ids grouped sensibly."""
+    parts = [p for p in re.split(r"(\d+)", str(port_id)) if p]
+    # (0, n, "") for a number and (1, 0, text) for text, so the tuples stay
+    # comparable -- mixing int and str at one position raises TypeError.
+    return tuple((0, int(p), "") if p.isdigit() else (1, 0, p) for p in parts)
+
+
+def port_label(port_id):
+    """The name shown in PRTG. Numeric ports keep their zero-padded form so
+    channel names on sensors already deployed do not change."""
+    pid = str(port_id)
+    return "{:02d}".format(int(pid)) if pid.isdigit() else pid
+
+
+def port_channel_id(port_id, taken):
+    """A stable channel id for a port, avoiding collisions within one sensor."""
+    pid = str(port_id)
+    if pid.isdigit():
+        cid = 99 + int(pid)
+    else:
+        cid = _MODULAR_BASE + zlib.crc32(pid.encode("utf-8")) % _MODULAR_SPAN
+    while cid in taken:          # crc32 collision, or a numeric/hashed overlap
+        cid += 1
+    taken.add(cid)
+    return cid
+
 
 
 def api(api_key, path, tries=3):
@@ -96,7 +142,8 @@ def main():
     per_port, down_alarm = [], []
     connected = errors = warnings = clients = alarm_count = 0
     poe = 0.0
-    for i, s in enumerate(sorted(stat, key=lambda x: int(x["portId"]))):
+    taken = set()
+    for s in sorted(stat, key=lambda x: port_sort_key(x.get("portId", ""))):
         pid = s["portId"]
         c = conf.get(pid, {})
         has_label = bool(c.get("name"))
@@ -112,8 +159,8 @@ def main():
             warnings += 1
         was_active = (s.get("usageInKb") or {}).get("total", 0) > 0
         alarm = in_alarm(pid, label, tags, has_label, up, was_active)
-        ch = chan(100 + i, "{:02d}: {}".format(int(pid), label), up,
-                  ctype="integer", kind="custom", display_unit="up")
+        ch = chan(port_channel_id(pid, taken), "{}: {}".format(port_label(pid), label),
+                  up, ctype="integer", kind="custom", display_unit="up")
         if alarm:
             alarm_count += 1
             ch["limits"] = {"error": {"lower": 1}}
