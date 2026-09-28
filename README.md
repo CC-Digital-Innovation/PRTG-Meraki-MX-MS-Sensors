@@ -1,6 +1,6 @@
 # PRTG-Meraki-MX-MS-Sensors
 
-Script v2 sensors for monitoring Cisco Meraki MX appliances and MS switches in PRTG Network Monitor. Appliance utilization, WAN uplink health, WAN traffic and switch port status, read from the Meraki Dashboard API -- no SNMP, no third-party Python modules.
+Script v2 sensors for monitoring Cisco Meraki MX appliances, MS switches and MR access points in PRTG Network Monitor. Appliance utilization, WAN uplink health and traffic, switch port status, and access point radio, channel utilization and uplink health, read from the Meraki Dashboard API -- no SNMP, no third-party Python modules.
 
 PRTG passes the Parameters field to the script on stdin; the script makes one or two API calls and returns a Script v2 JSON result with named channels and their limits. Thresholds ship as channel limits, so a sensor alerts from its first scan.
 
@@ -12,8 +12,18 @@ PRTG passes the Parameters field to the script on stdin; the script makes one or
 | `meraki_wan_status.py` | Uplink health for one MX uplink | Loss Percent, Latency, Jitter, Uplink Failed |
 | `meraki_wan_traffic.py` | Throughput for both uplinks of an MX | Traffic In/Out, Peak In/Out 60m |
 | `meraki_port_status.py` | Per-port state for an MS switch | `NN: <label>` per port, plus aggregates |
+| `meraki_mx_wan.py` | All uplinks of one MX, from the shared cache | Appliance Reporting, Uplinks In Service; per uplink: Uplink Failed, Loss, Latency, Traffic In/Out |
+| `meraki_ap_health.py` | One MR access point, from the shared cache | Device Online; per band: Radio Broadcasting, Channel, Channel / Wi-Fi / Non-Wi-Fi Utilization, Transmit Power; Ethernet Speed, Full Duplex, Full Power, Packet Loss Down/Up |
 
-`prtg_out.py` is a shared helper, not a sensor. Keep it beside the scripts; they import it.
+`prtg_out.py` and `meraki_cache.py` are shared helpers, not sensors. Keep them beside the scripts; the sensors import them.
+
+**The shared cache.** The Dashboard API allows 10 requests per second per organization, shared by every key and every application using it. A sensor per access point calling per-device endpoints does not fit in that. `meraki_mx_wan.py` and `meraki_ap_health.py` read organization-wide endpoints instead, through `meraki_cache.py`: the first sensor to need a dataset fetches it and writes it to a cache directory on the probe, and every other sensor reads that copy until it is `--cache-ttl` seconds old (default 240). A lock file stops two sensors fetching the same dataset at once, and a sensor that starts during a fetch waits for it. If the API fails or rate-limits, a copy up to `--max-stale` seconds old (default 900) is used and the sensor message gives its age. In testing, 20 AP sensors started together made 6 API calls between them, and one appliance sensor per MX across 106 appliances made 3.
+
+The cache lives in `MERAKI_CACHE_DIR` if set, else `<temp>\prtg-meraki-cache` -- `C:\Windows\Temp\prtg-meraki-cache` for a probe running as LocalSystem. Set `MERAKI_CACHE_LOG` to a file path to log every real API request, which is how to check what the cache is saving.
+
+**MX WAN** reports every uplink that is in service, or that you list in `--uplinks`. List the uplinks that should be up, so one that is unplugged alarms rather than dropping out of the sensor. Meraki keeps the last known uplink state for an appliance that stops checking in, so a dead appliance can still read "active"; **Appliance Reporting** catches that from the last check-in time (`--offline-after`, default 900 s). An appliance often monitors several loss/latency targets, and some never answer -- a provider gateway that drops ICMP, an IPv6 target on an IPv4 uplink -- so the sensor uses `--ip` (default 8.8.8.8) when it is monitored, otherwise the target with the lowest loss. Traffic is a 5-minute average.
+
+**AP health** reports each band the AP is broadcasting on, or that you list in `--bands`; listing the expected bands makes a radio that stops broadcasting alarm instead of disappearing. Channel utilization carries warning/error limits (`--util-warn` 60, `--util-error` 80); Non-Wi-Fi utilization is interference. Ethernet Speed warns below `--min-speed` (1000 Mbit/s) -- an AP that has negotiated 100 Mbit/s is a cabling or switch-port fault. Full Power warns when the AP is in low-power mode, which limits its radios. An AP that is offline or dormant reports Device Online 0 and nothing else.
 
 **Utilization** is the number the Dashboard shows under Organization > Summary report > (an `-appliance` network) > Utilization, which Meraki publishes as the signal to size an appliance up. Two states return no score and are reported rather than failed: HTTP 204 for a dormant appliance, and HTTP 400 `Feature not supported` for the passive unit of a warm-spare pair, which is normal. Neither emits a channel value -- reporting 0% would read as a healthy, idle appliance.
 
@@ -66,6 +76,8 @@ The splay is slept inside the script, so it is spent against the sensor's own ti
 | `meraki_wan_status.py` | `--serial`, `--uplink` (`wan1`), `--ip` (8.8.8.8), `--org-id`, `--loss-warn` (2), `--loss-error` (3), `--lat-warn` (150), `--lat-error` (300) |
 | `meraki_wan_traffic.py` | `--network-id`, `--floor-out-wan2` (3.0) |
 | `meraki_port_status.py` | `--serial`, `--alert-mode` (`active`), `--lookback-hours` (24), `--alert-tag`, `--alert-labels`, `--alert-ports` |
+| `meraki_mx_wan.py` | `--serial`, `--org-id`, `--uplinks` (e.g. `wan1,wan2`), `--ip` (8.8.8.8), `--loss-warn` (2), `--loss-error` (5), `--lat-warn` (150), `--lat-error` (300), `--offline-after` (900), `--cache-ttl` (240), `--max-stale` (900) |
+| `meraki_ap_health.py` | `--serial`, `--org-id`, `--bands` (e.g. `2.4,5`), `--util-warn` (60), `--util-error` (80), `--min-speed` (1000), `--loss-warn`, `--loss-error`, `--offline-status` (`error`\|`warning`), `--cache-ttl` (240), `--max-stale` (900) |
 
 `--org-id` on `meraki_wan_status.py` adds the Uplink Failed channel, a connection-loss record separate from packet loss.
 
@@ -92,7 +104,7 @@ python3 ImplementationScript.py --prtg-server https://prtg.example.com \
     --prtg-user admin --prtg-passhash <passhash> --api-key <meraki-key> --dry-run
 ```
 
-It walks organization -> networks -> devices, matches each Meraki device to an existing PRTG device by IP or exact name, and plans Device Utilization + WAN 1/2 Status + WAN Traffic on each MX or VMX, and Port Status on each MS. Devices with no PRTG match are reported, not created. Sensors whose name already exists on the device are skipped.
+It walks organization -> networks -> devices, matches each Meraki device to an existing PRTG device by IP or exact name, and plans Device Utilization + WAN 1/2 Status + WAN Traffic on each MX or VMX, and Port Status on each MS. With `--sensors mx_wan,ap_health` it plans MX WAN on each appliance and AP Health on each MR, and passes each one the uplinks / bands that are in service at creation time. Devices with no PRTG match are reported, not created. Sensors whose name already exists on the device are skipped.
 
 ```text
 2026-01-15 09:14:03: Script v2 sensor type = paessler.exe.exe_sensor
@@ -111,7 +123,9 @@ Drop `--dry-run` and answer `y` to create. Each run writes a timestamped `Implem
 
 | Flag | Effect |
 |---|---|
-| `--sensors` | Comma-separated subset of `device_utilization,wan_status,wan_traffic,port_status` (default all) |
+| `--sensors` | Comma-separated subset of `device_utilization,wan_status,wan_traffic,port_status,mx_wan,ap_health` (default `all` = the first four; the cache-backed `mx_wan` and `ap_health` are opt-in) |
+| `--probe` | Only match PRTG devices on probes whose name contains this text. On a core shared by several customers, private addresses overlap, so matching by IP across the whole core can pick another customer's device |
+| `--ap-util-warn` / `--ap-util-error` | AP channel utilization limits at creation time (60 / 80) |
 | `--only-serials` / `--skip-serials` | Scope to specific appliances: comma-separated, or `@path` to a file of serials |
 | `--key-placeholder N` | Which Script Sensors slot holds the key (default 1) |
 | `--interval` | Scan interval, set after creation (default `300\|5 minutes`) |

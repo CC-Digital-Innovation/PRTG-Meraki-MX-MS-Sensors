@@ -5,7 +5,7 @@
   On the probe host, from an elevated PowerShell:
     irm https://raw.githubusercontent.com/CC-Digital-Innovation/PRTG-Meraki-MX-MS-Sensors/main/install.ps1 | iex
 
-  Downloads prtg_out.py and the four sensor scripts from GitHub into the
+  Downloads prtg_out.py, meraki_cache.py and the sensor scripts from GitHub into the
   probe's Script v2 directory (Custom Sensors\scripts).
 
   Environment overrides:
@@ -19,8 +19,9 @@ $ErrorActionPreference = 'Stop'
 
 $repo   = if ($env:PRTG_SENSOR_REPO)   { $env:PRTG_SENSOR_REPO }   else { 'CC-Digital-Innovation/PRTG-Meraki-MX-MS-Sensors' }
 $branch = if ($env:PRTG_SENSOR_BRANCH) { $env:PRTG_SENSOR_BRANCH } else { 'main' }
-$files  = @('prtg_out.py', 'meraki_wan_status.py', 'meraki_wan_traffic.py', 'meraki_port_status.py',
-            'meraki_device_utilization.py')
+$files  = @('prtg_out.py', 'meraki_cache.py', 'meraki_wan_status.py', 'meraki_wan_traffic.py',
+            'meraki_port_status.py', 'meraki_device_utilization.py', 'meraki_mx_wan.py',
+            'meraki_ap_health.py')
 
 if ($env:PRTG_CUSTOM_SENSORS) {
     $root = $env:PRTG_CUSTOM_SENSORS
