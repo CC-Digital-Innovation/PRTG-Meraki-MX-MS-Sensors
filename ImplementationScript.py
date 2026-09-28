@@ -5,8 +5,16 @@ Walks a Meraki organization interactively (organization -> networks -> devices),
 matches each Meraki device to an existing PRTG device by name or IP, and creates
 the Script v2 sensors on the matching PRTG device:
 
-  MX appliance -> Device Utilization, WAN 1 Status, WAN 2 Status, WAN Traffic
+  MX appliance -> Device Utilization, WAN 1 Status, WAN 2 Status, WAN Traffic,
+                  MX WAN (all uplinks in one sensor, from the shared cache)
   MS switch    -> Port Status
+  MR access point -> AP Health (from the shared cache)
+
+The MX WAN and AP Health sensors read organization-wide API calls through
+meraki_cache.py, so a whole fleet costs a handful of calls per scan interval.
+At creation they are told which radios / uplinks are in service now
+(--bands, --uplinks), so one that disappears later alarms instead of going
+quiet. They are not in the default set; ask for them with --sensors.
 
 Use --sensors to create one kind on its own, and --only-serials / --skip-serials
 to scope a run to specific appliances -- for example when rolling Device
@@ -63,8 +71,12 @@ SCRIPTS = {
     "wan_traffic": "meraki_wan_traffic.py",
     "port_status": "meraki_port_status.py",
     "device_utilization": "meraki_device_utilization.py",
+    "mx_wan": "meraki_mx_wan.py",
+    "ap_health": "meraki_ap_health.py",
 }
 ALL_SENSORS = list(SCRIPTS)
+# the per-device sensors created by "all"; the cache-backed ones are opt-in
+DEFAULT_SENSORS = ["wan_status", "wan_traffic", "port_status", "device_utilization"]
 
 # Meraki security appliances are MX* hardware and VMX* virtual appliances; both
 # serve the appliance sensors. A bare "MX" prefix test silently skips every VMX.
@@ -107,6 +119,9 @@ def meraki_get(key, path, tries=5):
                     continue
                 raise SystemExit("Meraki API HTTP {} on {}: {}".format(
                     e.code, path, e.read().decode("utf-8", "ignore")[:200]))
+        # some org-wide calls wrap their page as {"items": [...], "meta": ...}
+        if isinstance(data, dict) and isinstance(data.get("items"), list):
+            data = data["items"]
         if not isinstance(data, list):
             return data
         out = (out or []) + data
@@ -377,8 +392,13 @@ def main():
     p.add_argument("--util-error", default="90",
                    help="MX utilization error limit in percent (default 90)")
     p.add_argument("--sensors", default="all",
-                   help="comma-separated subset of {} (default all). Use this to roll "
-                        "one sensor kind out on its own.".format(",".join(ALL_SENSORS)))
+                   help="comma-separated subset of {} (default all = {}). Use this to roll "
+                        "one sensor kind out on its own.".format(
+                            ",".join(ALL_SENSORS), ",".join(DEFAULT_SENSORS)))
+    p.add_argument("--ap-util-warn", default="60",
+                   help="AP channel utilization warning limit in percent (default 60)")
+    p.add_argument("--ap-util-error", default="80",
+                   help="AP channel utilization error limit in percent (default 80)")
     p.add_argument("--only-serials",
                    help="restrict to these Meraki serials: comma-separated, or @path "
                         "to a file with one serial per line. Everything else is skipped.")
@@ -386,6 +406,11 @@ def main():
                    help="exclude these Meraki serials (same forms as --only-serials). "
                         "Use it to leave appliances that are already monitored alone.")
     p.add_argument("--tag", default="meraki-api", help="tag applied to every created sensor")
+    p.add_argument("--probe",
+                   help="only match PRTG devices on probes whose name contains this text. "
+                        "On a core shared by several customers, private addresses overlap, "
+                        "so matching by IP across the whole core can pick another "
+                        "customer's device.")
     p.add_argument("--sensor-type", help="override the Script v2 sensor-type token")
     p.add_argument("--dry-run", action="store_true", help="show the plan, create nothing")
     p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
@@ -400,10 +425,12 @@ def main():
 
     log("connecting to PRTG at {}".format(a.prtg_server))
     prtg = Prtg(a.prtg_server, a.prtg_user, passhash)
-    prtg_devices = prtg.table("devices", "objid,device,host")
+    prtg_devices = prtg.table("devices", "objid,device,host,probe", extra="&filter_probe=@sub({})".format(
+        urllib.parse.quote(a.probe)) if a.probe else "")
     by_host = {d.get("host"): d for d in prtg_devices if d.get("host")}
     by_name = {norm(d.get("device")): d for d in prtg_devices}
-    log("PRTG has {} devices".format(len(prtg_devices)))
+    log("PRTG has {} devices{}".format(len(prtg_devices),
+                                       " on probes matching '{}'".format(a.probe) if a.probe else ""))
 
     if not prtg_devices:
         raise SystemExit("PRTG returned no devices; check the account's permissions.")
@@ -427,13 +454,13 @@ def main():
     nets = meraki_get(key, "/organizations/{}/networks?perPage=1000".format(
         urllib.parse.quote(str(org["id"]))))
     nets = [n for n in nets
-            if {"appliance", "switch"} & set(n.get("productTypes", []))]
+            if {"appliance", "switch", "wireless"} & set(n.get("productTypes", []))]
     if not nets:
-        raise SystemExit("No appliance/switch networks found in this organization.")
+        raise SystemExit("No appliance/switch/wireless networks found in this organization.")
     chosen = choose(nets, lambda n: n["name"],
                     "Networks (comma-separated, or A for all):", multi=True)
 
-    want = set(ALL_SENSORS) if a.sensors.strip().lower() == "all" else \
+    want = set(DEFAULT_SENSORS) if a.sensors.strip().lower() == "all" else \
         {s.strip() for s in a.sensors.split(",") if s.strip()}
     unknown = want - set(ALL_SENSORS)
     if unknown:
@@ -468,6 +495,21 @@ def main():
             org_addr[d.get("serial")] = addr
     log("org device list: {} appliances/switches carry an address".format(len(org_addr)))
 
+    # In-service radios and uplinks right now, for --bands / --uplinks.
+    org_path = "/organizations/{}".format(urllib.parse.quote(str(org["id"])))
+    ap_bands, mx_uplinks = {}, {}
+    if "ap_health" in want:
+        for dev in meraki_get(key, org_path + "/wireless/ssids/statuses/byDevice?perPage=500"):
+            for bss in dev.get("basicServiceSets", []):
+                r = bss.get("radio") or {}
+                if r.get("isBroadcasting") and r.get("band"):
+                    ap_bands.setdefault(dev["serial"], set()).add(str(r["band"]))
+    if "mx_wan" in want:
+        for dev in meraki_get(key, org_path + "/appliance/uplink/statuses?perPage=1000"):
+            mx_uplinks[dev["serial"]] = sorted(
+                u["interface"] for u in dev.get("uplinks", [])
+                if u.get("status") in ("active", "ready"))
+
     plan, unmatched, filtered = [], [], 0
     for net in chosen:
         for d in meraki_get(key, "/networks/{}/devices".format(urllib.parse.quote(net["id"]))):
@@ -482,7 +524,7 @@ def main():
                 continue
             pd = match_prtg_device(d, by_host, by_name)
             if IS_APPLIANCE(model):
-                if not want & {"device_utilization", "wan_status", "wan_traffic"}:
+                if not want & {"device_utilization", "wan_status", "wan_traffic", "mx_wan"}:
                     continue
                 if not pd:
                     unmatched.append((net["name"], d))
@@ -505,6 +547,27 @@ def main():
                                  SCRIPTS["wan_traffic"],
                                  "--network-id {} --api-key {} --floor-out-wan2 {} "
                                  "--splay {}".format(net["id"], keyref, a.floor_out_wan2, a.splay)))
+                if "mx_wan" in want:
+                    ups = mx_uplinks.get(serial)
+                    plan.append((pd, "{} - MX WAN - {}".format(net["name"], dname),
+                                 SCRIPTS["mx_wan"],
+                                 "--serial {} --org-id {} --api-key {}{} --splay {}".format(
+                                     serial, org["id"], keyref,
+                                     " --uplinks " + ",".join(ups) if ups else "", a.splay)))
+            elif model.startswith("MR") or model.startswith("CW"):
+                if "ap_health" not in want:
+                    continue
+                if not pd:
+                    unmatched.append((net["name"], d))
+                    continue
+                bands = sorted(ap_bands.get(serial, ()), key=float)
+                plan.append((pd, "{} - AP Health - {}".format(net["name"], dname),
+                             SCRIPTS["ap_health"],
+                             "--serial {} --org-id {} --api-key {}{} --util-warn {} "
+                             "--util-error {} --splay {}".format(
+                                 serial, org["id"], keyref,
+                                 " --bands " + ",".join(bands) if bands else "",
+                                 a.ap_util_warn, a.ap_util_error, a.splay)))
             elif model.startswith("MS"):
                 if "port_status" not in want:
                     continue
