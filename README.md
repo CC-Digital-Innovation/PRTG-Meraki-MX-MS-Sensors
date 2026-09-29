@@ -126,11 +126,15 @@ Drop `--dry-run` and answer `y` to create. Each run writes a timestamped `Implem
 | `--sensors` | Comma-separated subset of `device_utilization,wan_status,wan_traffic,port_status,mx_wan,ap_health` (default `all` = the first four; the cache-backed `mx_wan` and `ap_health` are opt-in) |
 | `--probe` | Only match PRTG devices on probes whose name contains this text. On a core shared by several customers, private addresses overlap, so matching by IP across the whole core can pick another customer's device |
 | `--ap-util-warn` / `--ap-util-error` | AP channel utilization limits at creation time (60 / 80) |
+| `--no-notify` | Create sensors with notification-trigger inheritance off, so a rollout can be reviewed before it alerts; turn it back on with `setobjectproperty.htm?name=inherittriggers&value=1` |
+| `--pause N` | Seconds between creations (default 0). A core near its limit can hang under back-to-back creation; 30-60 s spreads the load |
 | `--only-serials` / `--skip-serials` | Scope to specific appliances: comma-separated, or `@path` to a file of serials |
 | `--key-placeholder N` | Which Script Sensors slot holds the key (default 1) |
 | `--interval` | Scan interval, set after creation (default `300\|5 minutes`) |
 | `--util-warn` / `--util-error` | Utilization limits at creation time |
 | `--sensor-type` | Override the sensor-type token, normally read from the core |
+
+Creation is paced by the core itself: before each sensor the script times a one-row read and, above 4 s, backs off in 30 s steps until it is under 2 s; if the core stays slow for 15 minutes it stops cleanly, and a re-run resumes (sensors that exist are skipped by name). A create that errors or times out is logged and the run continues -- a timeout does not mean nothing was created, so at the end the script looks for a sensor that appeared on that device anyway and gives it its proper name.
 
 `--only-serials` matters when part of a fleet is already monitored: name-based deduplication will not catch a sensor created under a different naming convention.
 

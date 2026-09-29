@@ -94,7 +94,7 @@ def log(msg):
 
 
 # ---------------------------------------------------------------- Meraki
-def meraki_get(key, path, tries=5):
+def meraki_get(key, path, tries=10):
     """GET a Meraki endpoint, following Link pagination. Returns a list or dict.
 
     Retries on 429 honoring Retry-After. A full walk of a large organization
@@ -147,7 +147,10 @@ class Prtg:
 
     def _open(self, url, data=None, headers=None):
         req = urllib.request.Request(url, data=data, headers=headers or {})
-        with self.op.open(req, timeout=40) as r:
+        # 40 s is not enough under bulk creation: a slow core answered in 44 s
+        # and the unhandled timeout ended the run. The request usually still
+        # completes on the server.
+        with self.op.open(req, timeout=150) as r:
             return r.geturl(), r.read().decode("utf-8", "replace")
 
     def table(self, content, columns, extra="", count=50000):
@@ -157,6 +160,40 @@ class Prtg:
             return json.loads(body).get(content, [])
         except ValueError:
             return []
+
+    def latency(self):
+        """Seconds for a one-row table read; a timeout or error counts as 99."""
+        t = time.time()
+        try:
+            self._open("{}/api/table.json?content=sensors&columns=objid&count=1&{}".format(
+                self.base, self._auth))
+        except Exception:
+            return 99.0
+        return time.time() - t
+
+    def wait_healthy(self, slow=4.0, calm=2.0, give_up=900):
+        """Back off while the core is slow. Bulk creation is write-heavy and the
+        core handles writes serially; pushing on while it is slow can make it
+        unresponsive for everyone on it. Returns False if it stays slow for
+        give_up seconds, so the caller can stop cleanly and resume later."""
+        lat = self.latency()
+        if lat <= slow:
+            return True
+        start = time.time()
+        while lat > calm:
+            if time.time() - start > give_up:
+                return False
+            log("core slow ({:.1f}s), backing off 30s".format(lat))
+            time.sleep(30)
+            lat = self.latency()
+        log("core recovered ({:.1f}s)".format(lat))
+        return True
+
+    def no_notify(self, objid):
+        """Stop a sensor inheriting notification triggers, so a rollout stays
+        silent until it has been reviewed. Turn it back on per sensor with
+        setobjectproperty inherittriggers=1."""
+        self.setprop(objid, "inherittriggers", 0)
 
     def setprop(self, objid, name, value):
         self._open("{}/api/setobjectproperty.htm?id={}&name={}&value={}&{}".format(
@@ -412,6 +449,13 @@ def main():
                         "so matching by IP across the whole core can pick another "
                         "customer's device.")
     p.add_argument("--sensor-type", help="override the Script v2 sensor-type token")
+    p.add_argument("--pause", type=float, default=0,
+                   help="seconds to wait between sensor creations (default 0). A core that "
+                        "is already near its limit can hang under back-to-back creation; "
+                        "30-60 s spreads the load out")
+    p.add_argument("--no-notify", action="store_true",
+                   help="create sensors with notification-trigger inheritance off, so a "
+                        "rollout can be reviewed before it alerts; turn it back on afterwards")
     p.add_argument("--dry-run", action="store_true", help="show the plan, create nothing")
     p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
     a = p.parse_args()
@@ -484,16 +528,16 @@ def main():
     if skip:
         log("excluding {} serial(s) from --skip-serials".format(len(skip)))
 
-    # /networks/{id}/devices omits some address fields the org-wide list carries
-    # (a VMX reports only lanIp, and that key is absent from the network call),
-    # so merge the org view in by serial before matching on IP.
-    org_addr = {}
+    # One org-wide device list instead of a /networks/{id}/devices call per
+    # network: it carries the network id, model and every address field (the
+    # network call even omits some, e.g. a VMX's lanIp), and on an org already
+    # near its 10 req/s limit a call per network is what gets rate-limited.
+    by_net = {}
     for d in meraki_get(key, "/organizations/{}/devices?perPage=1000".format(
             urllib.parse.quote(str(org["id"])))):
-        addr = {f: d.get(f) for f in ("lanIp", "wan1Ip", "wan2Ip", "mgmtIp") if d.get(f)}
-        if addr:
-            org_addr[d.get("serial")] = addr
-    log("org device list: {} appliances/switches carry an address".format(len(org_addr)))
+        by_net.setdefault(d.get("networkId"), []).append(d)
+    log("org device list: {} devices in {} networks".format(
+        sum(len(v) for v in by_net.values()), len(by_net)))
 
     # In-service radios and uplinks right now, for --bands / --uplinks.
     org_path = "/organizations/{}".format(urllib.parse.quote(str(org["id"])))
@@ -512,10 +556,7 @@ def main():
 
     plan, unmatched, filtered = [], [], 0
     for net in chosen:
-        for d in meraki_get(key, "/networks/{}/devices".format(urllib.parse.quote(net["id"]))):
-            for f, v in org_addr.get(d.get("serial"), {}).items():
-                if not d.get(f):
-                    d[f] = v
+        for d in by_net.get(net["id"], []):
             model = (d.get("model") or "").upper()
             serial, dname = d.get("serial"), (d.get("name") or d.get("serial"))
             su = (serial or "").upper()
@@ -610,17 +651,49 @@ def main():
         return
 
     created = failed = 0
-    for pd, name, script, params in todo:
-        sid, info = prtg.create_scriptv2(pd["objid"], name, script, params, stype, a.tag,
-                                         timeout=script_timeout)
+    unsure = []  # (device, name, sensor ids before) for creates that errored mid-flight
+    for n, (pd, name, script, params) in enumerate(todo, 1):
+        if n > 1 and a.pause:
+            time.sleep(a.pause)
+        if not prtg.wait_healthy():
+            log("STOPPED: core stayed slow for 15 min after {} created; re-run to resume "
+                "(sensors that exist are skipped by name)".format(created))
+            break
+        before = prtg.sensor_ids(pd["objid"])
+        try:
+            sid, info = prtg.create_scriptv2(pd["objid"], name, script, params, stype, a.tag,
+                                             timeout=script_timeout)
+        except Exception as e:
+            # A timeout or 504 does not mean nothing was created; check at the end.
+            sid, info = None, "error mid-create ({}); checked again at the end".format(e)
+            unsure.append((pd["objid"], name, before))
         if sid:
             created += 1
             if a.interval:
                 prtg.setprop(sid, "interval", a.interval)
-            log("created id={} {}".format(sid, name))
+            if a.no_notify:
+                prtg.no_notify(sid)
+            log("created {}/{} id={} {}".format(n, len(todo), sid, name))
         else:
             failed += 1
             log("FAILED {} : {}".format(name, info))
+    # A create that errored may still have landed, under the wizard's default
+    # name. Name it now so a re-run does not duplicate it.
+    for dev, name, before in unsure:
+        added = prtg.sensor_ids(dev) - before
+        if len(added) == 1:
+            nid = added.pop()
+            prtg.setprop(nid, "name", name)
+            if a.interval:
+                prtg.setprop(nid, "interval", a.interval)
+            if a.no_notify:
+                prtg.no_notify(nid)
+            created += 1
+            failed -= 1
+            log("recovered id={} {} (created despite the error)".format(nid, name))
+        elif added:
+            log("CHECK device {}: {} new sensors after an errored create of {}".format(
+                dev, len(added), name))
     log("done: {} created, {} failed, {} already existed, {} filtered by serial".format(
         created, failed, len(plan) - len(todo), filtered))
 
