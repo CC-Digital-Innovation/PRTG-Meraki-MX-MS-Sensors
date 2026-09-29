@@ -438,8 +438,10 @@ def main():
                         "one sensor kind out on its own.".format(
                             ",".join(ALL_SENSORS), ",".join(DEFAULT_SENSORS)))
     p.add_argument("--health-device", type=int,
-                   help="PRTG device id to hold the Network Health sensors (one per network); "
-                        "required with --sensors network_health")
+                   help="PRTG device id for a network's Health sensor when the network has no "
+                        "appliance in PRTG; required with --sensors network_health. Otherwise "
+                        "each network's sensor goes on its appliance's device, so it sits in "
+                        "that site's tree and its status rolls up with the site.")
     p.add_argument("--only-networks",
                    help="restrict to these Meraki networks, by id or exact name: comma-separated, "
                         "or @path to a file with one per line")
@@ -578,7 +580,11 @@ def main():
         for net in chosen:
             if not by_net.get(net["id"]):
                 continue  # nothing to report on an empty network
-            plan.append((hd, "{} - Network Health".format(net["name"]),
+            # on the site's appliance where PRTG has one (primary of an HA pair first)
+            mx = sorted((d for d in by_net[net["id"]] if IS_APPLIANCE((d.get("model") or "").upper())),
+                        key=lambda d: (d.get("name") or "").lower())
+            target = next((p for p in (match_prtg_device(d, by_host, by_name) for d in mx) if p), hd)
+            plan.append((target, "{} - Network Health".format(net["name"]),
                          SCRIPTS["network_health"],
                          "--network-id {} --org-id {} --api-key {} --splay {}".format(
                              net["id"], org["id"], keyref, a.splay)))

@@ -129,7 +129,7 @@ Drop `--dry-run` and answer `y` to create. Each run writes a timestamped `Implem
 |---|---|
 | `--sensors` | Comma-separated subset of `device_utilization,wan_status,wan_traffic,port_status,mx_wan,ap_health,network_health` (default `all` = the first four; the cache-backed `mx_wan`, `ap_health` and `network_health` are opt-in) |
 | `--only-networks` | Restrict to these Meraki networks, by id or exact name: comma-separated, or `@path` to a file |
-| `--health-device N` | PRTG device id to hold the Network Health sensors (one per network, named `<network> - Network Health`); required with `--sensors network_health` |
+| `--health-device N` | Network Health sensors (one per network, named `<network> - Network Health`) go on the network's appliance device in PRTG, so they sit in the site's tree and roll up with it; a network with no appliance in PRTG uses this device. Required with `--sensors network_health` |
 | `--probe` | Only match PRTG devices on probes whose name contains this text. On a core shared by several customers, private addresses overlap, so matching by IP across the whole core can pick another customer's device |
 | `--ap-util-warn` / `--ap-util-error` | AP channel utilization limits at creation time (60 / 80) |
 | `--no-notify` | Create sensors with notification-trigger inheritance off, so a rollout can be reviewed before it alerts; turn it back on with `setobjectproperty.htm?name=inherittriggers&value=1` |
