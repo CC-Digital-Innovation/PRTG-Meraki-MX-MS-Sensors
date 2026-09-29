@@ -73,6 +73,7 @@ SCRIPTS = {
     "device_utilization": "meraki_device_utilization.py",
     "mx_wan": "meraki_mx_wan.py",
     "ap_health": "meraki_ap_health.py",
+    "network_health": "meraki_network_health.py",
 }
 ALL_SENSORS = list(SCRIPTS)
 # the per-device sensors created by "all"; the cache-backed ones are opt-in
@@ -436,6 +437,12 @@ def main():
                    help="comma-separated subset of {} (default all = {}). Use this to roll "
                         "one sensor kind out on its own.".format(
                             ",".join(ALL_SENSORS), ",".join(DEFAULT_SENSORS)))
+    p.add_argument("--health-device", type=int,
+                   help="PRTG device id to hold the Network Health sensors (one per network); "
+                        "required with --sensors network_health")
+    p.add_argument("--only-networks",
+                   help="restrict to these Meraki networks, by id or exact name: comma-separated, "
+                        "or @path to a file with one per line")
     p.add_argument("--ap-util-warn", default="60",
                    help="AP channel utilization warning limit in percent (default 60)")
     p.add_argument("--ap-util-error", default="80",
@@ -507,6 +514,10 @@ def main():
         raise SystemExit("No appliance/switch/wireless networks found in this organization.")
     chosen = choose(nets, lambda n: n["name"],
                     "Networks (comma-separated, or A for all):", multi=True)
+    only_nets = serial_set(a.only_networks)  # same list forms; compared upper-cased
+    if only_nets is not None:
+        chosen = [n for n in chosen if n["id"].upper() in only_nets or n["name"].upper() in only_nets]
+        log("restricted to {} network(s) from --only-networks".format(len(chosen)))
 
     want = set(DEFAULT_SENSORS) if a.sensors.strip().lower() == "all" else \
         {s.strip() for s in a.sensors.split(",") if s.strip()}
@@ -559,6 +570,18 @@ def main():
                 if u.get("status") in ("active", "ready"))
 
     plan, unmatched, filtered = [], [], 0
+    if "network_health" in want:
+        if not a.health_device:
+            raise SystemExit("--sensors network_health needs --health-device <PRTG device id>")
+        hd = next((d for d in prtg_devices if d["objid"] == a.health_device), None) or \
+            {"objid": a.health_device, "device": "device {}".format(a.health_device)}
+        for net in chosen:
+            if not by_net.get(net["id"]):
+                continue  # nothing to report on an empty network
+            plan.append((hd, "{} - Network Health".format(net["name"]),
+                         SCRIPTS["network_health"],
+                         "--network-id {} --org-id {} --api-key {} --splay {}".format(
+                             net["id"], org["id"], keyref, a.splay)))
     for net in chosen:
         for d in by_net.get(net["id"], []):
             model = (d.get("model") or "").upper()

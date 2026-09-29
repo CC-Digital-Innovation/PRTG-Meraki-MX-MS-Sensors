@@ -21,7 +21,7 @@ $repo   = if ($env:PRTG_SENSOR_REPO)   { $env:PRTG_SENSOR_REPO }   else { 'CC-Di
 $branch = if ($env:PRTG_SENSOR_BRANCH) { $env:PRTG_SENSOR_BRANCH } else { 'main' }
 $files  = @('prtg_out.py', 'meraki_cache.py', 'meraki_wan_status.py', 'meraki_wan_traffic.py',
             'meraki_port_status.py', 'meraki_device_utilization.py', 'meraki_mx_wan.py',
-            'meraki_ap_health.py')
+            'meraki_ap_health.py', 'meraki_network_health.py')
 
 if ($env:PRTG_CUSTOM_SENSORS) {
     $root = $env:PRTG_CUSTOM_SENSORS

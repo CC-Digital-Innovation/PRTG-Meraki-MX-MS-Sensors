@@ -13,6 +13,7 @@ PRTG passes the Parameters field to the script on stdin; the script makes one or
 | `meraki_wan_traffic.py` | Throughput for both uplinks of an MX | Traffic In/Out, Peak In/Out 60m |
 | `meraki_port_status.py` | Per-port state for an MS switch | `NN: <label>` per port, plus aggregates |
 | `meraki_mx_wan.py` | All uplinks of one MX, from the shared cache | Appliance Reporting, Uplinks In Service; per uplink: Uplink Failed, Loss, Latency, Traffic In/Out |
+| `meraki_network_health.py` | One network's device and uplink states, from the shared cache (replaces the native "Cisco Meraki Network Health" sensor) | Uplinks Active / Ready / Failed / Not Connected; MX, MS, MR, IOT Online / Alerting / Offline / Dormant |
 | `meraki_ap_health.py` | One MR access point, from the shared cache | Device Online; per band: Radio Broadcasting, Channel, Channel / Wi-Fi / Non-Wi-Fi Utilization, Transmit Power; Ethernet Speed, Full Duplex, Full Power, Packet Loss Down/Up |
 
 `prtg_out.py` and `meraki_cache.py` are shared helpers, not sensors. Keep them beside the scripts; the sensors import them.
@@ -20,6 +21,8 @@ PRTG passes the Parameters field to the script on stdin; the script makes one or
 **The shared cache.** The Dashboard API allows 10 requests per second per organization, shared by every key and every application using it. A sensor per access point calling per-device endpoints does not fit in that. `meraki_mx_wan.py` and `meraki_ap_health.py` read organization-wide endpoints instead, through `meraki_cache.py`: the first sensor to need a dataset fetches it and writes it to a cache directory on the probe, and every other sensor reads that copy until it is `--cache-ttl` seconds old (default 240). A lock file stops two sensors fetching the same dataset at once, and a sensor that starts during a fetch waits for it. If the API fails or rate-limits, a copy up to `--max-stale` seconds old (default 900) is used and the sensor message gives its age. In testing, 20 AP sensors started together made 6 API calls between them, and one appliance sensor per MX across 106 appliances made 3.
 
 The cache lives in `MERAKI_CACHE_DIR` if set, else `<temp>\prtg-meraki-cache` -- `C:\Windows\Temp\prtg-meraki-cache` for a probe running as LocalSystem. Set `MERAKI_CACHE_LOG` to a file path to log every real API request, which is how to check what the cache is saving.
+
+**Network health** has the same channels as PRTG's native "Cisco Meraki Network Health" sensor, but reads two organization-wide calls (`devices/statuses`, `uplinks/statuses`) instead of querying per network on every scan, so one sensor per network across a whole organization costs two calls per cache period. Cellular gateways count in the MX group, as they do natively. The message names the devices that are offline or alerting and any failed uplink. Limits default to the native layout and can be set per group (`--uplink-failed`, `--alerting`, `--mx-offline`, `--offline`, `--mx-dormant`, `--dormant`: `error`, `warning` or `off`). A sensor whose network no longer exists in the organization reports an error saying so; the native sensor keeps showing Up with blank channels.
 
 **MX WAN** reports every uplink that is in service, or that you list in `--uplinks`. List the uplinks that should be up, so one that is unplugged alarms rather than dropping out of the sensor. Meraki keeps the last known uplink state for an appliance that stops checking in, so a dead appliance can still read "active"; **Appliance Reporting** catches that from the last check-in time (`--offline-after`, default 900 s). An appliance often monitors several loss/latency targets, and some never answer -- a provider gateway that drops ICMP, an IPv6 target on an IPv4 uplink -- so the sensor uses `--ip` (default 8.8.8.8) when it is monitored, otherwise the target with the lowest loss. Traffic is a 5-minute average.
 
@@ -77,6 +80,7 @@ The splay is slept inside the script, so it is spent against the sensor's own ti
 | `meraki_wan_traffic.py` | `--network-id`, `--floor-out-wan2` (3.0) |
 | `meraki_port_status.py` | `--serial`, `--alert-mode` (`active`), `--lookback-hours` (24), `--alert-tag`, `--alert-labels`, `--alert-ports` |
 | `meraki_mx_wan.py` | `--serial`, `--org-id`, `--uplinks` (e.g. `wan1,wan2`), `--ip` (8.8.8.8), `--loss-warn` (2), `--loss-error` (5), `--lat-warn` (150), `--lat-error` (300), `--offline-after` (900), `--cache-ttl` (240), `--max-stale` (900) |
+| `meraki_network_health.py` | `--network-id`, `--org-id`, `--uplink-failed` (`error`), `--alerting` (`error`), `--mx-offline` (`error`), `--offline` (`warning`), `--mx-dormant` (`warning`), `--dormant` (`off`), `--list` (5), `--cache-ttl` (240), `--max-stale` (900) |
 | `meraki_ap_health.py` | `--serial`, `--org-id`, `--bands` (e.g. `2.4,5`), `--util-warn` (60), `--util-error` (80), `--min-speed` (1000), `--loss-warn`, `--loss-error`, `--offline-status` (`error`\|`warning`), `--cache-ttl` (240), `--max-stale` (900) |
 
 `--org-id` on `meraki_wan_status.py` adds the Uplink Failed channel, a connection-loss record separate from packet loss.
@@ -123,7 +127,9 @@ Drop `--dry-run` and answer `y` to create. Each run writes a timestamped `Implem
 
 | Flag | Effect |
 |---|---|
-| `--sensors` | Comma-separated subset of `device_utilization,wan_status,wan_traffic,port_status,mx_wan,ap_health` (default `all` = the first four; the cache-backed `mx_wan` and `ap_health` are opt-in) |
+| `--sensors` | Comma-separated subset of `device_utilization,wan_status,wan_traffic,port_status,mx_wan,ap_health,network_health` (default `all` = the first four; the cache-backed `mx_wan`, `ap_health` and `network_health` are opt-in) |
+| `--only-networks` | Restrict to these Meraki networks, by id or exact name: comma-separated, or `@path` to a file |
+| `--health-device N` | PRTG device id to hold the Network Health sensors (one per network, named `<network> - Network Health`); required with `--sensors network_health` |
 | `--probe` | Only match PRTG devices on probes whose name contains this text. On a core shared by several customers, private addresses overlap, so matching by IP across the whole core can pick another customer's device |
 | `--ap-util-warn` / `--ap-util-error` | AP channel utilization limits at creation time (60 / 80) |
 | `--no-notify` | Create sensors with notification-trigger inheritance off, so a rollout can be reviewed before it alerts; turn it back on with `setobjectproperty.htm?name=inherittriggers&value=1` |
