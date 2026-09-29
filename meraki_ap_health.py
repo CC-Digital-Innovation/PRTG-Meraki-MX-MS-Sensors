@@ -204,4 +204,10 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except Exception as e:
+        # report it as a sensor message, not a bare "exit code 1"
+        fail("Unexpected error: {}: {}".format(type(e).__name__, e))

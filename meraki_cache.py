@@ -86,6 +86,30 @@ def _get_pages(api_key, path, params, deadline):
     return out
 
 
+def _store(data_file, content):
+    """Write the cache file atomically. On Windows, replacing a file that
+    another sensor has open for reading raises PermissionError; with hundreds
+    of sensors sharing the cache that happens, and it must not fail the sensor
+    that already holds fresh data. Retry briefly, then give up quietly -- the
+    next fetch will write it."""
+    tmp = "{}.{}.tmp".format(data_file, os.getpid())
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(content, f)
+        for attempt in range(5):
+            try:
+                os.replace(tmp, data_file)
+                return
+            except OSError:
+                time.sleep(0.2 * (attempt + 1))
+    except OSError:
+        pass
+    try:
+        os.remove(tmp)
+    except OSError:
+        pass
+
+
 def org_get(api_key, path, params=None, ttl=240, max_stale=900, wait=40):
     """Return (data, age_seconds) for an organization-wide GET.
 
@@ -147,10 +171,7 @@ def org_get(api_key, path, params=None, ttl=240, max_stale=900, wait=40):
             if data is not None and age < max_stale:
                 return data, age
             raise
-        tmp = "{}.{}.tmp".format(data_file, os.getpid())
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump({"fetched": time.time(), "path": path, "data": fresh}, f)
-        os.replace(tmp, data_file)
+        _store(data_file, {"fetched": time.time(), "path": path, "data": fresh})
         return fresh, 0.0
     finally:
         try:
