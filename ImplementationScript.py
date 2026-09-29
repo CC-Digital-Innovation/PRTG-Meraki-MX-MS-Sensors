@@ -438,10 +438,14 @@ def main():
                         "one sensor kind out on its own.".format(
                             ",".join(ALL_SENSORS), ",".join(DEFAULT_SENSORS)))
     p.add_argument("--health-device", type=int,
-                   help="PRTG device id for a network's Health sensor when the network has no "
-                        "appliance in PRTG; required with --sensors network_health. Otherwise "
-                        "each network's sensor goes on its appliance's device, so it sits in "
-                        "that site's tree and its status rolls up with the site.")
+                   help="PRTG device id for Network Health sensors (one per network); required "
+                        "with --sensors network_health unless every network is in --health-device-map")
+    p.add_argument("--health-device-map",
+                   help="@path to a file of '<network id> <PRTG device id>' lines: put that "
+                        "network's Health sensor on that device, e.g. a per-site device in the "
+                        "site's own group so it rolls up with the site. Not on an appliance: its "
+                        "Ping is usually the master sensor, and a paused parent would pause the "
+                        "network's health exactly when the site is down.")
     p.add_argument("--only-networks",
                    help="restrict to these Meraki networks, by id or exact name: comma-separated, "
                         "or @path to a file with one per line")
@@ -573,17 +577,25 @@ def main():
 
     plan, unmatched, filtered = [], [], 0
     if "network_health" in want:
-        if not a.health_device:
-            raise SystemExit("--sensors network_health needs --health-device <PRTG device id>")
-        hd = next((d for d in prtg_devices if d["objid"] == a.health_device), None) or \
-            {"objid": a.health_device, "device": "device {}".format(a.health_device)}
+        hmap = {}
+        if a.health_device_map:
+            path = a.health_device_map.lstrip("@")
+            with open(path) as fh:
+                for ln in fh:
+                    parts = ln.split("#", 1)[0].split()
+                    if len(parts) >= 2:
+                        hmap[parts[0]] = int(parts[1])
+        known = {d["objid"]: d for d in prtg_devices}
+        def dev(objid):
+            return known.get(objid) or {"objid": objid, "device": "device {}".format(objid)}
         for net in chosen:
             if not by_net.get(net["id"]):
                 continue  # nothing to report on an empty network
-            # on the site's appliance where PRTG has one (primary of an HA pair first)
-            mx = sorted((d for d in by_net[net["id"]] if IS_APPLIANCE((d.get("model") or "").upper())),
-                        key=lambda d: (d.get("name") or "").lower())
-            target = next((p for p in (match_prtg_device(d, by_host, by_name) for d in mx) if p), hd)
+            objid = hmap.get(net["id"], a.health_device)
+            if not objid:
+                raise SystemExit("no device for {}: give --health-device or map it in "
+                                 "--health-device-map".format(net["name"]))
+            target = dev(objid)
             plan.append((target, "{} - Network Health".format(net["name"]),
                          SCRIPTS["network_health"],
                          "--network-id {} --org-id {} --api-key {} --splay {}".format(
