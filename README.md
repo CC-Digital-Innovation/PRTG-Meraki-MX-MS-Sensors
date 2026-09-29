@@ -25,7 +25,7 @@ The cache lives in `MERAKI_CACHE_DIR` if set, else `<temp>\prtg-meraki-cache` --
 
 **AP health** reports each band the AP is broadcasting on, or that you list in `--bands`; listing the expected bands makes a radio that stops broadcasting alarm instead of disappearing. Channel utilization carries warning/error limits (`--util-warn` 60, `--util-error` 80); Non-Wi-Fi utilization is interference. Ethernet Speed warns below `--min-speed` (1000 Mbit/s) -- an AP that has negotiated 100 Mbit/s is a cabling or switch-port fault. Full Power warns when the AP is in low-power mode, which limits its radios. An AP that is offline or dormant reports Device Online 0 and nothing else.
 
-**Utilization** is the number the Dashboard shows under Organization > Summary report > (an `-appliance` network) > Utilization, which Meraki publishes as the signal to size an appliance up. Two states return no score and are reported rather than failed: HTTP 204 for a dormant appliance, and HTTP 400 `Feature not supported` for the passive unit of a warm-spare pair, which is normal. Neither emits a channel value -- reporting 0% would read as a healthy, idle appliance.
+**Utilization** is the number the Dashboard shows under Organization > Summary report > (an `-appliance` network) > Utilization, which Meraki publishes as the signal to size an appliance up. Two states return no score and are reported rather than failed: HTTP 204 for a dormant appliance, and HTTP 400 `Feature not supported` for the passive unit of a warm-spare pair, which is normal. Neither emits a channel value -- reporting 0% would read as a healthy, idle appliance. Meraki serves the score only per device, so on an organization near its API rate limit a slow or rejected call is routine; the call goes through `meraki_cache.py` keyed per appliance, and a failed call reports the last good score (up to `--max-stale` seconds old, with its age in the message) instead of failing the scan. `ImplementationScript.py` creates these sensors at a 10-minute interval (`--util-interval`): the score moves slowly, and it halves their share of the organization's API budget.
 
 **WAN traffic** carries a lower error limit on the WAN2 out-peak (`--floor-out-wan2`, default 3.0 Mbit/s) to flag an uplink that has stopped carrying traffic. Set `0` to disable.
 
@@ -72,7 +72,7 @@ The splay is slept inside the script, so it is spent against the sensor's own ti
 
 | Script | Parameters |
 |---|---|
-| `meraki_device_utilization.py` | `--serial`, `--util-warn` (75), `--util-error` (90), `--idle-status` (`ok`\|`warning`) |
+| `meraki_device_utilization.py` | `--serial`, `--util-warn` (75), `--util-error` (90), `--idle-status` (`ok`\|`warning`), `--max-stale` (1500) |
 | `meraki_wan_status.py` | `--serial`, `--uplink` (`wan1`), `--ip` (8.8.8.8), `--org-id`, `--loss-warn` (2), `--loss-error` (3), `--lat-warn` (150), `--lat-error` (300) |
 | `meraki_wan_traffic.py` | `--network-id`, `--floor-out-wan2` (3.0) |
 | `meraki_port_status.py` | `--serial`, `--alert-mode` (`active`), `--lookback-hours` (24), `--alert-tag`, `--alert-labels`, `--alert-ports` |
@@ -131,6 +131,7 @@ Drop `--dry-run` and answer `y` to create. Each run writes a timestamped `Implem
 | `--only-serials` / `--skip-serials` | Scope to specific appliances: comma-separated, or `@path` to a file of serials |
 | `--key-placeholder N` | Which Script Sensors slot holds the key (default 1) |
 | `--interval` | Scan interval, set after creation (default `300\|5 minutes`) |
+| `--util-interval` | Scan interval for Device Utilization (default `600\|10 minutes`) |
 | `--util-warn` / `--util-error` | Utilization limits at creation time |
 | `--sensor-type` | Override the sensor-type token, normally read from the core |
 

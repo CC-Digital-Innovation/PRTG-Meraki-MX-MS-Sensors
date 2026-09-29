@@ -15,57 +15,27 @@ than as a failure:
 - HTTP 400 "Feature not supported": the passive unit of a warm-spare HA
   pair. Only the active unit carries a perfScore; monitor the primary.
 
+The score is only served per device (there is no organization-wide call), so
+on an organization near its API rate limit a slow or rejected call is common.
+The call goes through meraki_cache.py, keyed per appliance: when it fails, the
+last good score up to --max-stale seconds old is reported instead, with its
+age in the message, rather than failing the scan.
+
 Parameters (the PRTG Script v2 "Parameters" field, delivered on stdin):
   --serial <MX> [--api-key %scriptplaceholder1]
   [--util-warn 75] [--util-error 90] [--splay N]
-  [--idle-status ok|warning]
+  [--idle-status ok|warning] [--max-stale 1500]
 
 The API key can also come from the MERAKI_API_KEY environment variable.
 """
 import os
-import sys
-import json
 import time
 import random
 import argparse
-import urllib.request
 import urllib.parse
-import urllib.error
 
 from prtg_out import emit, fail, chan, read_args, clean
-
-API_BASE = "https://api.meraki.com/api/v1"
-
-# Meraki returns these instead of a score; they are states, not errors.
-NO_SCORE_UNSUPPORTED = "unsupported"   # HTTP 400 "Feature not supported"
-NO_SCORE_IDLE = "idle"                 # HTTP 204, empty body
-
-
-def api(api_key, path, tries=3):
-    """GET path and return (payload, no_score_reason).
-
-    payload is None when Meraki reports no score for this appliance, in which
-    case no_score_reason says which of the two states it is.
-    """
-    req = urllib.request.Request(API_BASE + path, headers={
-        "Authorization": "Bearer {}".format(api_key), "Accept": "application/json"})
-    for attempt in range(tries):
-        try:
-            with urllib.request.urlopen(req, timeout=30) as r:
-                body = r.read().decode("utf-8").strip()
-                if r.status == 204 or not body:
-                    return None, NO_SCORE_IDLE
-                return json.loads(body), None
-        except urllib.error.HTTPError as e:
-            if e.code == 429 and attempt < tries - 1:
-                time.sleep(min(float(e.headers.get("Retry-After") or 2), 15))
-                continue
-            detail = e.read().decode("utf-8", "ignore")[:250]
-            if e.code == 400 and "not supported" in detail.lower():
-                return None, NO_SCORE_UNSUPPORTED
-            fail("Meraki API HTTP {} on {}: {}".format(e.code, path, detail))
-        except Exception as e:
-            fail("Request failed on {}: {}".format(path, e))
+from meraki_cache import org_get, check_key, MerakiError
 
 
 def main():
@@ -78,26 +48,32 @@ def main():
     p.add_argument("--idle-status", default="ok", choices=["ok", "warning"],
                    help="sensor status when the appliance reports no score "
                         "(dormant, or an HA passive unit)")
+    p.add_argument("--max-stale", type=float, default=1500,
+                   help="seconds a last good score may be reused when the API call fails")
     a = read_args(p)
 
     api_key = clean(a.api_key)
-    if not api_key:
-        fail("No API key (--api-key / placeholder / MERAKI_API_KEY came through empty).")
-    if api_key.startswith("%") or " " in api_key:
-        fail("API key looks unresolved/malformed (starts with '{}').".format(api_key[:1]))
+    problem = check_key(api_key)
+    if problem:
+        fail(problem)
     serial = clean(a.serial)
     if a.splay:
         time.sleep(random.uniform(0, a.splay))
 
-    perf, no_score = api(api_key, "/devices/{}/appliance/performance".format(
-                         urllib.parse.quote(serial)))
+    path = "/devices/{}/appliance/performance".format(urllib.parse.quote(serial))
+    try:
+        perf, age = org_get(api_key, path, ttl=120, max_stale=a.max_stale)
+    except MerakiError as e:
+        if "not supported" in str(e).lower():
+            # No channel value: reporting 0 would read as a healthy, idle appliance.
+            emit([], "{}: HA passive unit (Meraki scores only the active unit) -- "
+                     "monitor the primary instead".format(serial), status=a.idle_status)
+            return
+        fail(str(e))
 
-    if no_score:
-        note = ("HA passive unit (Meraki scores only the active unit) -- "
-                "monitor the primary instead" if no_score == NO_SCORE_UNSUPPORTED
-                else "no utilization reported (appliance dormant or not checked in)")
-        # No channel value: reporting 0 here would read as a healthy appliance.
-        emit([], "{}: {}".format(serial, note), status=a.idle_status)
+    if not perf:  # HTTP 204, empty body
+        emit([], "{}: no utilization reported (appliance dormant or not checked in)".format(
+            serial), status=a.idle_status)
         return
 
     score = perf.get("perfScore")
@@ -111,10 +87,18 @@ def main():
              ctype="float", kind="percent",
              warn_upper=a.util_warn, err_upper=a.util_error),
     ]
+    text = "Device Utilization: {:.1f}%".format(utilization)
+    if age > 120:
+        text += " (API unavailable; last good value {:.0f} s old)".format(age)
     status = "error" if utilization >= a.util_error else \
              ("warning" if utilization >= a.util_warn else "ok")
-    emit(channels, "Device Utilization: {:.1f}%".format(utilization), status=status)
+    emit(channels, text, status=status)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except Exception as e:
+        fail("Unexpected error: {}: {}".format(type(e).__name__, e))

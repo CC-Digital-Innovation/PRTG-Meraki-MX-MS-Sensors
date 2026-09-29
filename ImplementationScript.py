@@ -421,6 +421,10 @@ def main():
                    help="scan interval, set after creation (default '300|5 minutes'). "
                         "Utilization moves slowly; the 60 s wizard default is five times "
                         "the Meraki API calls for no extra signal. Empty to leave as created.")
+    p.add_argument("--util-interval", default="600|10 minutes",
+                   help="scan interval for Device Utilization (default '600|10 minutes'). "
+                        "The score moves slowly and is only served per device, so it is "
+                        "the cheapest place to save API calls on a busy organization.")
     p.add_argument("--key-placeholder", default="1", choices=["1", "2", "3", "4", "5"],
                    help="which 'Credentials for Script Sensors' placeholder slot holds the "
                         "Meraki API key (default 1, referenced as %%scriptplaceholder1)")
@@ -669,8 +673,9 @@ def main():
             unsure.append((pd["objid"], name, before))
         if sid:
             created += 1
-            if a.interval:
-                prtg.setprop(sid, "interval", a.interval)
+            interval = a.util_interval if script == SCRIPTS["device_utilization"] else a.interval
+            if interval:
+                prtg.setprop(sid, "interval", interval)
             if a.no_notify:
                 prtg.no_notify(sid)
             log("created {}/{} id={} {}".format(n, len(todo), sid, name))
