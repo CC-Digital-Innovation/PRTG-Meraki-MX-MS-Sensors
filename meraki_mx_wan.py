@@ -23,6 +23,12 @@ Channels per uplink (wan1 10..14, wan2 20..24, cellular 30..34):
   +2  Latency (ms)
   +3  Traffic In (Mbit/s, 5 min average)
   +4  Traffic Out (Mbit/s, 5 min average)
+  +5  Loss Avg 5m (%)
+
+The loss error limit sits on the 5-minute average (the longest window the
+organization loss call serves), not the latest sample: bursty loss swings the
+latest sample above and below the limit every scan, so the sensor never stays
+Down long enough for a notification trigger. Loss keeps the warning limit only.
 
 An uplink gets channels when it is not "not connected", or when it is listed
 in --uplinks. List the uplinks that should be in service so one that is
@@ -31,7 +37,7 @@ unplugged alarms instead of dropping out of the sensor.
 Parameters (the PRTG Script v2 "Parameters" field, delivered on stdin):
   --serial <MX> --org-id <org> [--api-key %scriptplaceholder1]
   [--uplinks wan1,wan2] [--ip 8.8.8.8]
-  [--loss-warn 2] [--loss-error 5] [--lat-warn 150] [--lat-error 300]
+  [--loss-warn 2] [--loss-error 3] [--lat-warn 150] [--lat-error 300]
   [--offline-after 900] [--cache-ttl 240] [--max-stale 900] [--splay N]
 
 The API key can also come from the MERAKI_API_KEY environment variable.
@@ -58,7 +64,7 @@ def main():
     p.add_argument("--ip", default="8.8.8.8",
                    help="preferred loss/latency target; falls back to the best-answering one")
     p.add_argument("--loss-warn", type=float, default=2)
-    p.add_argument("--loss-error", type=float, default=5)
+    p.add_argument("--loss-error", type=float, default=3)
     p.add_argument("--lat-warn", type=float, default=150)
     p.add_argument("--lat-error", type=float, default=300)
     p.add_argument("--offline-after", type=float, default=900,
@@ -121,10 +127,11 @@ def main():
         if not samples:
             continue
         last = max(samples, key=lambda s: s.get("ts", ""))
+        avg = sum(float(s["lossPercent"]) for s in samples) / len(samples)
         rank = (0 if a.ip and row.get("ip") == a.ip else 1, float(last["lossPercent"]))
         cur = probe.get(row["uplink"])
         if cur is None or rank < cur["rank"]:
-            probe[row["uplink"]] = {"sample": last, "ip": row.get("ip"), "rank": rank}
+            probe[row["uplink"]] = {"sample": last, "avg": avg, "ip": row.get("ip"), "rank": rank}
 
     traffic = {}
     for net in usage or []:
@@ -152,17 +159,20 @@ def main():
         part = "{} {}".format(up, st)
         pr = probe.get(up)
         if pr:
-            loss = float(pr["sample"]["lossPercent"])
+            loss, avg = float(pr["sample"]["lossPercent"]), pr["avg"]
             lat = float(pr["sample"].get("latencyMs") or 0)
             channels.append(chan(base + 1, "Loss ({})".format(up), round(loss, 2), kind="percent",
-                                 warn_upper=a.loss_warn, err_upper=a.loss_error))
+                                 warn_upper=a.loss_warn))
+            channels.append(chan(base + 5, "Loss Avg 5m ({})".format(up), round(avg, 2),
+                                 kind="percent", warn_upper=a.loss_warn, err_upper=a.loss_error))
             channels.append(chan(base + 2, "Latency ({})".format(up), round(lat, 1),
                                  kind="time_milliseconds",
                                  warn_upper=a.lat_warn, err_upper=a.lat_error))
-            part += " loss {:.1f}% {:.0f} ms to {}".format(loss, lat, pr["ip"])
-            if loss > a.loss_error or lat > a.lat_error:
+            part += " loss {:.1f}% (5 min avg {:.1f}%) {:.0f} ms to {}".format(
+                loss, avg, lat, pr["ip"])
+            if avg > a.loss_error or lat > a.lat_error:
                 worst = "error"
-            elif (loss > a.loss_warn or lat > a.lat_warn) and worst == "ok":
+            elif (max(loss, avg) > a.loss_warn or lat > a.lat_warn) and worst == "ok":
                 worst = "warning"
         t = traffic.get(up)
         if t:

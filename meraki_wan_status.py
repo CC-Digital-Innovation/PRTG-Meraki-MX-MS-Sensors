@@ -3,6 +3,10 @@
 
 Device-scoped: needs only the MX serial. Thresholds ship as channel limits
 (loss warn > 2% / error > 3%, latency warn > 150 / error > 300 ms by default).
+The loss error limit sits on the 10-minute average, not the latest 1-minute
+sample: bursty loss swings the latest sample above and below the limit every
+scan, so the sensor never stays Down long enough for a notification trigger.
+The latest sample keeps the warning limit only.
 Pass --org-id to add an "Uplink Failed" channel from the organization uplink
 status call; its history is the WAN connection-loss record, which is separate
 from packet loss.
@@ -78,11 +82,14 @@ def main():
              "monitored uplink target, and the uplink is up).".format(serial, uplink, ip))
     last = max(samples, key=lambda h: h.get("endTime", ""))
     loss = float(last["lossPercent"])
+    loss_avg = sum(float(h["lossPercent"]) for h in samples) / len(samples)
     latency = float(last.get("latencyMs") or 0)
     jitter = float(last.get("jitter") or 0)
 
     channels = [
         chan(10, "Loss Percent ({})".format(uplink), round(loss, 2),
+             ctype="float", kind="percent", warn_upper=a.loss_warn),
+        chan(14, "Loss Avg 10m ({})".format(uplink), round(loss_avg, 2),
              ctype="float", kind="percent",
              warn_upper=a.loss_warn, err_upper=a.loss_error),
         chan(11, "Latency ({})".format(uplink), round(latency, 1),
@@ -91,7 +98,8 @@ def main():
         chan(12, "Jitter ({})".format(uplink), round(jitter, 2),
              ctype="float", kind="time_milliseconds"),
     ]
-    text = "WAN {} to {}: loss {:.2f}%, latency {:.0f} ms".format(uplink, ip, loss, latency)
+    text = "WAN {} to {}: loss {:.2f}% (10 min avg {:.2f}%), latency {:.0f} ms".format(
+        uplink, ip, loss, loss_avg, latency)
 
     if a.org_id:
         try:
@@ -108,8 +116,8 @@ def main():
         except Exception:
             pass
 
-    status = "error" if loss > a.loss_error or latency > a.lat_error else \
-             ("warning" if loss > a.loss_warn or latency > a.lat_warn else "ok")
+    status = "error" if loss_avg > a.loss_error or latency > a.lat_error else \
+             ("warning" if max(loss, loss_avg) > a.loss_warn or latency > a.lat_warn else "ok")
     emit(channels, text, status=status)
 
 

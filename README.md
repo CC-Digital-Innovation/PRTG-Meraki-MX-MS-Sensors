@@ -9,10 +9,10 @@ PRTG passes the Parameters field to the script on stdin; the script makes one or
 | Script | Reports | Channels |
 |---|---|---|
 | `meraki_device_utilization.py` | Appliance utilization (perfScore) for one MX or VMX | Device Utilization (%) |
-| `meraki_wan_status.py` | Uplink health for one MX uplink | Loss Percent, Latency, Jitter, Uplink Failed |
+| `meraki_wan_status.py` | Uplink health for one MX uplink | Loss Percent, Loss Avg 10m, Latency, Jitter, Uplink Failed |
 | `meraki_wan_traffic.py` | Throughput for both uplinks of an MX | Traffic In/Out, Peak In/Out 60m |
 | `meraki_port_status.py` | Per-port state for an MS switch | `NN: <label>` per port, plus aggregates |
-| `meraki_mx_wan.py` | All uplinks of one MX, from the shared cache | Appliance Reporting, Uplinks In Service; per uplink: Uplink Failed, Loss, Latency, Traffic In/Out |
+| `meraki_mx_wan.py` | All uplinks of one MX, from the shared cache | Appliance Reporting, Uplinks In Service; per uplink: Uplink Failed, Loss, Loss Avg 5m, Latency, Traffic In/Out |
 | `meraki_network_health.py` | One network's device and uplink states, from the shared cache (replaces the native "Cisco Meraki Network Health" sensor) | Uplinks Active / Ready / Failed / Not Connected; MX, MS, MR, IOT Online / Alerting / Offline / Dormant |
 | `meraki_ap_health.py` | One MR access point, from the shared cache | Device Online; per band: Radio Broadcasting, Channel, Channel / Wi-Fi / Non-Wi-Fi Utilization, Transmit Power; Ethernet Speed, Full Duplex, Full Power, Packet Loss Down/Up |
 
@@ -79,11 +79,13 @@ The splay is slept inside the script, so it is spent against the sensor's own ti
 | `meraki_wan_status.py` | `--serial`, `--uplink` (`wan1`), `--ip` (8.8.8.8), `--org-id`, `--loss-warn` (2), `--loss-error` (3), `--lat-warn` (150), `--lat-error` (300) |
 | `meraki_wan_traffic.py` | `--network-id`, `--floor-out-wan2` (3.0) |
 | `meraki_port_status.py` | `--serial`, `--alert-mode` (`active`), `--lookback-hours` (24), `--alert-tag`, `--alert-labels`, `--alert-ports` |
-| `meraki_mx_wan.py` | `--serial`, `--org-id`, `--uplinks` (e.g. `wan1,wan2`), `--ip` (8.8.8.8), `--loss-warn` (2), `--loss-error` (5), `--lat-warn` (150), `--lat-error` (300), `--offline-after` (900), `--cache-ttl` (240), `--max-stale` (900) |
+| `meraki_mx_wan.py` | `--serial`, `--org-id`, `--uplinks` (e.g. `wan1,wan2`), `--ip` (8.8.8.8), `--loss-warn` (2), `--loss-error` (3), `--lat-warn` (150), `--lat-error` (300), `--offline-after` (900), `--cache-ttl` (240), `--max-stale` (900) |
 | `meraki_network_health.py` | `--network-id`, `--org-id`, `--uplink-failed` (`error`), `--alerting` (`error`), `--mx-offline` (`error`), `--offline` (`warning`), `--mx-dormant` (`warning`), `--dormant` (`off`), `--list` (5), `--cache-ttl` (240), `--max-stale` (900) |
 | `meraki_ap_health.py` | `--serial`, `--org-id`, `--bands` (e.g. `2.4,5`), `--util-warn` (60), `--util-error` (80), `--min-speed` (1000), `--loss-warn`, `--loss-error`, `--offline-status` (`error`\|`warning`), `--cache-ttl` (240), `--max-stale` (900) |
 
 `--org-id` on `meraki_wan_status.py` adds the Uplink Failed channel, a connection-loss record separate from packet loss.
+
+**Loss alarms on an average.** The loss error limit (`--loss-error`) sits on Loss Avg 10m (`meraki_wan_status.py`) or Loss Avg 5m (`meraki_mx_wan.py`, the longest window the organization call serves). The latest one-minute sample carries the warning limit only. Bursty loss swings the latest sample above and below the limit from scan to scan, so a sensor alarming on it never stays Down long enough for a notification trigger with a delay. Sensors created before the average channel existed keep the error limit stored on the latest-sample channel when it was first created; clear that channel's error limit so only the average can take the sensor Down.
 
 In PRTG, a Parameters field looks like:
 
