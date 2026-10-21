@@ -7,6 +7,11 @@ The loss error limit sits on the 10-minute average, not the latest 1-minute
 sample: bursty loss swings the latest sample above and below the limit every
 scan, so the sensor never stays Down long enough for a notification trigger.
 The latest sample keeps the warning limit only.
+Availability 24h is the share of the last 24 hours the uplink was usable. A
+minute counts as down when its loss is 100%, or when it falls in a run of 3 or
+more minutes with no data (the appliance was offline). Shorter gaps are
+reporting gaps, a few a day on every uplink, and are left out. It reports
+without a limit; the loss average does the alarming.
 Pass --org-id to add an "Uplink Failed" channel from the organization uplink
 status call; its history is the WAN connection-loss record, which is separate
 from packet loss.
@@ -31,6 +36,7 @@ import urllib.error
 from prtg_out import emit, fail, chan, read_args, clean
 
 API_BASE = "https://api.meraki.com/api/v1"
+MAX_GAP = 2  # minutes of missing data treated as a reporting gap, not downtime
 
 
 def api(api_key, path, params, tries=3):
@@ -49,6 +55,26 @@ def api(api_key, path, params, tries=3):
                 e.code, path, e.read().decode("utf-8", "ignore")[:250]))
         except Exception as e:
             fail("Request failed on {}: {}".format(path, e))
+
+
+def availability(rows):
+    """Percent of minutes the uplink was usable, or None with no data at all."""
+    up = down = run = 0
+    for h in rows:
+        loss = h.get("lossPercent")
+        if loss is None:
+            run += 1
+            continue
+        if run > MAX_GAP:
+            down += run
+        run = 0
+        if float(loss) >= 100:
+            down += 1
+        else:
+            up += 1
+    if run > MAX_GAP:
+        down += run
+    return 100.0 * up / (up + down) if up + down else None
 
 
 def main():
@@ -74,13 +100,16 @@ def main():
     if a.splay:
         time.sleep(random.uniform(0, a.splay))
 
+    # One call covers both windows: 24 h of 1-minute samples for availability,
+    # the last 10 of them for loss, latency and jitter.
     hist = api(api_key, "/devices/{}/lossAndLatencyHistory".format(urllib.parse.quote(serial)),
-               {"timespan": 600, "uplink": uplink, "ip": ip})
-    samples = [h for h in hist if h.get("lossPercent") is not None]
+               {"timespan": 86400, "resolution": 60, "uplink": uplink, "ip": ip})
+    rows = sorted(hist or [], key=lambda h: h.get("startTs", ""))
+    samples = [h for h in rows[-10:] if h.get("lossPercent") is not None]
     if not samples:
         fail("No loss/latency sample for {} {} to {} in 10 min (check --ip matches a "
              "monitored uplink target, and the uplink is up).".format(serial, uplink, ip))
-    last = max(samples, key=lambda h: h.get("endTime", ""))
+    last = samples[-1]
     loss = float(last["lossPercent"])
     loss_avg = sum(float(h["lossPercent"]) for h in samples) / len(samples)
     latency = float(last.get("latencyMs") or 0)
@@ -100,6 +129,11 @@ def main():
     ]
     text = "WAN {} to {}: loss {:.2f}% (10 min avg {:.2f}%), latency {:.0f} ms".format(
         uplink, ip, loss, loss_avg, latency)
+    avail = availability(rows)
+    if avail is not None:
+        channels.append(chan(15, "Availability 24h ({})".format(uplink), round(avail, 2),
+                             ctype="float", kind="percent"))
+        text += ", 24 h availability {:.2f}%".format(avail)
 
     if a.org_id:
         try:

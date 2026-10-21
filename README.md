@@ -9,7 +9,7 @@ PRTG passes the Parameters field to the script on stdin; the script makes one or
 | Script | Reports | Channels |
 |---|---|---|
 | `meraki_device_utilization.py` | Appliance utilization (perfScore) for one MX or VMX | Device Utilization (%) |
-| `meraki_wan_status.py` | Uplink health for one MX uplink | Loss Percent, Loss Avg 10m, Latency, Jitter, Uplink Failed |
+| `meraki_wan_status.py` | Uplink health for one MX uplink | Loss Percent, Loss Avg 10m, Latency, Jitter, Availability 24h, Uplink Failed |
 | `meraki_wan_traffic.py` | Throughput for both uplinks of an MX | Traffic In/Out, Peak In/Out 60m |
 | `meraki_port_status.py` | Per-port state for an MS switch | `NN: <label>` per port, plus aggregates |
 | `meraki_mx_wan.py` | All uplinks of one MX, from the shared cache | Appliance Reporting, Uplinks In Service; per uplink: Uplink Failed, Loss, Loss Avg 5m, Latency, Traffic In/Out |
@@ -86,6 +86,8 @@ The splay is slept inside the script, so it is spent against the sensor's own ti
 `--org-id` on `meraki_wan_status.py` adds the Uplink Failed channel, a connection-loss record separate from packet loss.
 
 **Loss alarms on an average.** The loss error limit (`--loss-error`) sits on Loss Avg 10m (`meraki_wan_status.py`) or Loss Avg 5m (`meraki_mx_wan.py`, the longest window the organization call serves). The latest one-minute sample carries the warning limit only. Bursty loss swings the latest sample above and below the limit from scan to scan, so a sensor alarming on it never stays Down long enough for a notification trigger with a delay. Sensors created before the average channel existed keep the error limit stored on the latest-sample channel when it was first created; clear that channel's error limit so only the average can take the sensor Down.
+
+**Availability 24h** (`meraki_wan_status.py`) is the share of the last 24 hours the uplink was usable, from the same loss history call, so it costs no extra API request. A minute counts as down when its loss is 100%, or when it falls in a run of 3 or more minutes with no data, which is how an offline appliance shows up. Gaps of 1 or 2 minutes appear a few times a day on every uplink and are left out. Over 30 days this lands within an hour of the Downtime column on the Dashboard's Insight > WAN health page; Meraki does not publish that page's own definition or expose it through the API. The channel carries no limit.
 
 In PRTG, a Parameters field looks like:
 
