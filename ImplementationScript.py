@@ -7,7 +7,8 @@ the Script v2 sensors on the matching PRTG device:
 
   MX appliance -> Device Utilization, WAN 1 Status, WAN 2 Status, WAN Traffic,
                   MX WAN (all uplinks in one sensor, from the shared cache)
-  MS switch    -> Port Status
+  MS switch    -> Port Status (one per slice of the ports, created with
+                  --split, when the switch has more than one sensor can chart)
   MR access point -> AP Health (from the shared cache)
 
 The MX WAN and AP Health sensors read organization-wide API calls through
@@ -82,6 +83,10 @@ DEFAULT_SENSORS = ["wan_status", "wan_traffic", "port_status", "device_utilizati
 # Meraki security appliances are MX* hardware and VMX* virtual appliances; both
 # serve the appliance sensors. A bare "MX" prefix test silently skips every VMX.
 IS_APPLIANCE = re.compile(r'^V?MX', re.I).match
+
+# PRTG supports 50 channels per sensor and the port sensor uses 7 for its
+# aggregates, so one sensor charts up to 43 ports.
+PORTS_PER_SENSOR = 50 - 7
 
 _logf = None
 
@@ -392,6 +397,13 @@ def serial_set(spec):
     return out
 
 
+def port_sensor_count(key, serial):
+    """(sensors needed, port count) for a switch, by the same rule as the
+    --split recommendation of meraki_port_status.py."""
+    n = len(meraki_get(key, "/devices/{}/switch/ports".format(urllib.parse.quote(serial))))
+    return max(1, -(-n // PORTS_PER_SENSOR)), n
+
+
 def match_prtg_device(mdev, by_host, by_name):
     """Match a Meraki device to an existing PRTG device by IP (the PRTG device
     host), falling back to an exact device-name match."""
@@ -660,10 +672,25 @@ def main():
                 if not pd:
                     unmatched.append((net["name"], d))
                     continue
-                plan.append((pd, "{} - Port Status - {}".format(net["name"], dname),
-                             SCRIPTS["port_status"],
-                             "--serial {} --api-key {} --alert-mode active "
-                             "--splay {}".format(serial, keyref, a.splay)))
+                try:
+                    parts, nports = port_sensor_count(key, serial)
+                except SystemExit as e:
+                    parts = 1
+                    log("could not read the port list of {} ({}); planning one "
+                        "Port Status sensor".format(dname, e))
+                params = "--serial {} --api-key {} --alert-mode active --splay {}".format(
+                    serial, keyref, a.splay)
+                if parts == 1:
+                    plan.append((pd, "{} - Port Status - {}".format(net["name"], dname),
+                                 SCRIPTS["port_status"], params))
+                else:
+                    log("{} reports {} ports: planning {} Port Status sensors".format(
+                        dname, nports, parts))
+                    for k in range(1, parts + 1):
+                        plan.append((pd, "{} - Port Status - {} ({}/{})".format(
+                                         net["name"], dname, k, parts),
+                                     SCRIPTS["port_status"],
+                                     "{} --split {}/{}".format(params, k, parts)))
 
     existing = {(str(s.get("parentid")), s.get("sensor"))
                 for s in prtg.table("sensors", "objid,sensor,parentid")}

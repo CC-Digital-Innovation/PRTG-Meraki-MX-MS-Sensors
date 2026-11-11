@@ -11,7 +11,7 @@ PRTG passes the Parameters field to the script on stdin; the script makes one or
 | `meraki_device_utilization.py` | Appliance utilization (perfScore) for one MX or VMX | Device Utilization (%) |
 | `meraki_wan_status.py` | Uplink health for one MX uplink | Loss Percent, Loss Avg 10m, Latency, Jitter, Availability 24h, Uplink Failed |
 | `meraki_wan_traffic.py` | Throughput for both uplinks of an MX | Traffic In/Out, Peak In/Out 60m |
-| `meraki_port_status.py` | Per-port state for an MS switch | `NN: <label>` per port, plus aggregates |
+| `meraki_port_status.py` | Per-port state for an MS switch, or for a slice of its ports | `NN: <label>` per port, plus aggregates |
 | `meraki_mx_wan.py` | All uplinks of one MX, from the shared cache | Appliance Reporting, Uplinks In Service; per uplink: Uplink Failed, Loss, Loss Avg 5m, Latency, Traffic In/Out |
 | `meraki_network_health.py` | One network's device and uplink states, from the shared cache (replaces the native "Cisco Meraki Network Health" sensor) | Uplinks Active / Ready / Failed / Not Connected; MX, MS, MR, IOT Online / Alerting / Offline / Dormant |
 | `meraki_ap_health.py` | One MR access point, from the shared cache | Device Online; per band: Radio Broadcasting, Channel, Channel / Wi-Fi / Non-Wi-Fi Utilization, Transmit Power; Ethernet Speed, Full Duplex, Full Power, Packet Loss Down/Up |
@@ -33,6 +33,14 @@ The cache lives in `MERAKI_CACHE_DIR` if set, else `<temp>\prtg-meraki-cache` --
 **WAN traffic** carries a lower error limit on the WAN2 out-peak (`--floor-out-wan2`, default 3.0 Mbit/s) to flag an uplink that has stopped carrying traffic. Set `0` to disable.
 
 **Port status** alarms only on ports in the alarm set, chosen by `--alert-mode`: `active` (up now, or passed traffic within `--lookback-hours`), `all-labeled`, or `selective` (`--alert-tag`, `--alert-labels` globs, `--alert-ports`).
+
+**Switches with more than 43 ports.** PRTG supports 50 channels per sensor and the port sensor spends 7 on aggregates, which leaves 43 for ports. An MS150-48MP-4X reports 54 ports, so one sensor would need 61 channels. Without a split, the sensor goes to error with a message that names the fix:
+
+```text
+Would emit 61 channels (7 aggregates + 54 ports) but PRTG supports 50. This switch reports 54 ports. Split it across 2 sensors on the same serial: '--split 1/2' to '--split 2/2'.
+```
+
+Cover the switch with two sensors on the same serial, one with `--split 1/2` and one with `--split 2/2`. `--split N/M` cuts the ports into M contiguous, near-equal slices and charts slice N, working from the port count the switch reports. `--ports 1-24` (or `1-24,49-54`) picks ports by number instead, to set the boundaries by hand. Each sensor's aggregates cover its own slice, so the two sensors divide the switch's alarms between them instead of both raising the same down port; `--scope switch` makes the aggregates switch-wide, and `--aggregates minimal` (2 channels) or `none` leaves room for more ports per sensor. Run the script by hand with `--list-ports` for the port inventory and the recommended split.
 
 ## Requirements
 
@@ -78,7 +86,7 @@ The splay is slept inside the script, so it is spent against the sensor's own ti
 | `meraki_device_utilization.py` | `--serial`, `--util-warn` (75), `--util-error` (90), `--idle-status` (`ok`\|`warning`), `--max-stale` (1500) |
 | `meraki_wan_status.py` | `--serial`, `--uplink` (`wan1`), `--ip` (8.8.8.8), `--org-id`, `--loss-warn` (2), `--loss-error` (3), `--lat-warn` (150), `--lat-error` (300) |
 | `meraki_wan_traffic.py` | `--network-id`, `--floor-out-wan2` (3.0) |
-| `meraki_port_status.py` | `--serial`, `--alert-mode` (`active`), `--lookback-hours` (24), `--alert-tag`, `--alert-labels`, `--alert-ports` |
+| `meraki_port_status.py` | `--serial`, `--alert-mode` (`active`), `--lookback-hours` (24), `--alert-tag`, `--alert-labels`, `--alert-ports`, `--split` (e.g. `1/2`), `--ports` (e.g. `1-24`), `--aggregates` (`full`\|`minimal`\|`none`), `--scope` (`range`\|`switch`), `--max-channels` (50), `--list-ports` |
 | `meraki_mx_wan.py` | `--serial`, `--org-id`, `--uplinks` (e.g. `wan1,wan2`), `--ip` (8.8.8.8), `--loss-warn` (2), `--loss-error` (3), `--lat-warn` (150), `--lat-error` (300), `--offline-after` (900), `--cache-ttl` (240), `--max-stale` (900) |
 | `meraki_network_health.py` | `--network-id`, `--org-id`, `--uplink-failed` (`error`), `--alerting` (`error`), `--mx-offline` (`error`), `--offline` (`warning`), `--mx-dormant` (`warning`), `--dormant` (`off`), `--list` (5), `--cache-ttl` (240), `--max-stale` (900) |
 | `meraki_ap_health.py` | `--serial`, `--org-id`, `--bands` (e.g. `2.4,5`), `--util-warn` (60), `--util-error` (80), `--min-speed` (1000), `--loss-warn`, `--loss-error`, `--offline-status` (`error`\|`warning`), `--cache-ttl` (240), `--max-stale` (900) |
@@ -112,7 +120,7 @@ python3 ImplementationScript.py --prtg-server https://prtg.example.com \
     --prtg-user admin --prtg-passhash <passhash> --api-key <meraki-key> --dry-run
 ```
 
-It walks organization -> networks -> devices, matches each Meraki device to an existing PRTG device by IP or exact name, and plans Device Utilization + WAN 1/2 Status + WAN Traffic on each MX or VMX, and Port Status on each MS. With `--sensors mx_wan,ap_health` it plans MX WAN on each appliance and AP Health on each MR, and passes each one the uplinks / bands that are in service at creation time. Devices with no PRTG match are reported, not created. Sensors whose name already exists on the device are skipped.
+It walks organization -> networks -> devices, matches each Meraki device to an existing PRTG device by IP or exact name, and plans Device Utilization + WAN 1/2 Status + WAN Traffic on each MX or VMX, and Port Status on each MS -- one sensor per slice, named `(1/2)`, `(2/2)` and created with `--split`, when the switch has more than 43 ports. With `--sensors mx_wan,ap_health` it plans MX WAN on each appliance and AP Health on each MR, and passes each one the uplinks / bands that are in service at creation time. Devices with no PRTG match are reported, not created. Sensors whose name already exists on the device are skipped.
 
 ```text
 2026-01-15 09:14:03: Script v2 sensor type = paessler.exe.exe_sensor
@@ -160,7 +168,9 @@ Creation is paced by the core itself: before each sensor the script times a one-
   PRTG keys history to the channel id, so an id that shifts when a module is added
   or removed hands one port's history to another. Ports 1..48 land on 100..147,
   which is what the earlier positional numbering produced, so sensors already
-  deployed keep their history and their channel names.
+  deployed keep their history and their channel names. A port keeps the same id
+  in every `--split` or `--ports` slice, so moving a slice boundary does not hand
+  one port's history to another.
 - Meraki says a `portId` is "commonly just the port number" but "may contain
   additional identifying information such as the slot and module-type if the port
   is located on a port module". Modular hardware (MS390, C9300, and MS425 flexible
