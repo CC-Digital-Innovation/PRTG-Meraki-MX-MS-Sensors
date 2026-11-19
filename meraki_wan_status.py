@@ -14,12 +14,16 @@ reporting gaps, a few a day on every uplink, and are left out. It reports
 without a limit; the loss average does the alarming.
 Pass --org-id to add an "Uplink Failed" channel from the organization uplink
 status call; its history is the WAN connection-loss record, which is separate
-from packet loss.
+from packet loss. That call returns every appliance in the organization, so it
+goes through meraki_cache.py, and one fetch per probe every --cache-ttl
+seconds serves every WAN sensor on that probe. If the fetch fails, a copy up to
+--max-stale seconds old is used and the message gives its age.
 
 Parameters (the PRTG Script v2 "Parameters" field, delivered on stdin):
   --serial <MX> --uplink wan1|wan2 --ip 8.8.8.8 [--api-key %scriptplaceholder1]
   [--org-id <org-id>] [--loss-warn 2] [--loss-error 3]
   [--lat-warn 150] [--lat-error 300] [--splay N]
+  [--cache-ttl 120] [--max-stale 300]
 
 The API key can also come from the MERAKI_API_KEY environment variable.
 """
@@ -34,6 +38,7 @@ import urllib.parse
 import urllib.error
 
 from prtg_out import emit, fail, chan, read_args, clean
+from meraki_cache import org_get
 
 API_BASE = "https://api.meraki.com/api/v1"
 MAX_GAP = 2  # minutes of missing data treated as a reporting gap, not downtime
@@ -89,6 +94,10 @@ def main():
     p.add_argument("--lat-warn", type=float, default=150)
     p.add_argument("--lat-error", type=float, default=300)
     p.add_argument("--splay", type=float, default=0)
+    p.add_argument("--cache-ttl", type=float, default=120,
+                   help="seconds the organization uplink status copy is reused")
+    p.add_argument("--max-stale", type=float, default=300,
+                   help="seconds an older copy may be used when the API call fails")
     a = read_args(p)
 
     api_key = clean(a.api_key)
@@ -137,16 +146,22 @@ def main():
 
     if a.org_id:
         try:
-            st = api(api_key, "/organizations/{}/appliance/uplink/statuses".format(
-                     clean(a.org_id)), {"serials[]": serial})
-            up = next((u for d in st for u in d.get("uplinks", [])
-                       if u.get("interface") == uplink), None)
+            # The whole organization, not just this serial, so every WAN
+            # sensor on the probe shares one cached copy. wait=20 keeps the
+            # scan inside the 60 s of timeout left after the splay.
+            st, age = org_get(api_key, "/organizations/{}/appliance/uplink/statuses".format(
+                              clean(a.org_id)), {"perPage": 1000},
+                              ttl=a.cache_ttl, max_stale=a.max_stale, wait=20)
+            up = next((u for d in st if d.get("serial") == serial
+                       for u in d.get("uplinks", []) if u.get("interface") == uplink), None)
             state = (up or {}).get("status", "missing")
             channels.append(chan(13, "Uplink Failed ({})".format(uplink),
                                  0 if state in ("active", "ready") else 1,
                                  ctype="integer", kind="custom", display_unit="state",
                                  err_upper=0.5))
             text += ", status {}".format(state)
+            if age > a.cache_ttl:
+                text += " (status data {:.0f} s old)".format(age)
         except Exception:
             pass
 

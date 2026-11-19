@@ -33,18 +33,25 @@ split to use.
 
 Run by hand with --list-ports for the port inventory and the recommended split.
 
+Both API calls go through meraki_cache.py, keyed per switch. The port
+configuration (labels and tags) rarely changes and is reused for --config-ttl
+seconds. The port statuses are reused for --status-ttl seconds, shorter than
+the 60 s scan, so each sensor still gets fresh data every scan while the
+sensors on one split switch share a single fetch. If a statuses fetch fails, a
+copy up to --max-stale seconds old is used and the message gives its age.
+
 Parameters (the PRTG Script v2 "Parameters" field, delivered on stdin):
   --serial <SW> [--api-key %scriptplaceholder1] [--alert-mode active]
   [--lookback-hours 24] [--alert-tag prtg-alarm] [--alert-labels "UPLINK*"]
   [--alert-ports 1,2] [--splay N]
   [--ports 1-27] [--split 1/2] [--aggregates full|minimal|none]
   [--scope range|switch] [--max-channels 50] [--list-ports]
+  [--config-ttl 3600] [--status-ttl 50] [--max-stale 180]
 
 The API key can also come from the MERAKI_API_KEY environment variable.
 """
 import os
 import sys
-import json
 import time
 import random
 import re
@@ -52,13 +59,10 @@ import math
 import zlib
 import fnmatch
 import argparse
-import urllib.request
 import urllib.parse
-import urllib.error
 
 from prtg_out import emit, fail, chan, read_args, clean
-
-API_BASE = "https://api.meraki.com/api/v1"
+from meraki_cache import org_get, MerakiError
 
 # PRTG supports this many channels on one sensor.
 PRTG_CHANNEL_LIMIT = 50
@@ -171,23 +175,6 @@ def suggest_split(n_ports, agg_count, limit=PRTG_CHANNEL_LIMIT):
     return max(1, math.ceil(n_ports / room))
 
 
-def api(api_key, path, tries=3):
-    req = urllib.request.Request(API_BASE + path, headers={
-        "Authorization": "Bearer {}".format(api_key), "Accept": "application/json"})
-    for attempt in range(tries):
-        try:
-            with urllib.request.urlopen(req, timeout=30) as r:
-                return json.loads(r.read().decode("utf-8"))
-        except urllib.error.HTTPError as e:
-            if e.code == 429 and attempt < tries - 1:
-                time.sleep(min(float(e.headers.get("Retry-After") or 2), 15))
-                continue
-            fail("Meraki API HTTP {} on {}: {}".format(
-                e.code, path, e.read().decode("utf-8", "ignore")[:250]))
-        except Exception as e:
-            fail("Request failed on {}: {}".format(path, e))
-
-
 def main():
     p = argparse.ArgumentParser(exit_on_error=False)
     p.add_argument("--serial", required=True)
@@ -210,6 +197,12 @@ def main():
     p.add_argument("--max-channels", type=int, default=PRTG_CHANNEL_LIMIT)
     p.add_argument("--list-ports", action="store_true",
                    help="Report the port inventory and the recommended split, then exit.")
+    p.add_argument("--config-ttl", type=float, default=3600,
+                   help="seconds the port configuration (labels, tags) is reused")
+    p.add_argument("--status-ttl", type=float, default=50,
+                   help="seconds the port statuses are reused; keep under the scan interval")
+    p.add_argument("--max-stale", type=float, default=180,
+                   help="seconds older port statuses may be used when the API call fails")
     a = read_args(p)
 
     api_key = clean(a.api_key)
@@ -222,10 +215,17 @@ def main():
         time.sleep(random.uniform(0, a.splay))
 
     lookback = int(a.lookback_hours * 3600)
-    conf = {c["portId"]: c for c in api(api_key, "/devices/{}/switch/ports".format(
-            urllib.parse.quote(serial)))}
-    stat = api(api_key, "/devices/{}/switch/ports/statuses?timespan={}".format(
-               urllib.parse.quote(serial), lookback))
+    dev = "/devices/{}/switch/ports".format(urllib.parse.quote(serial))
+    # wait=25 on each call keeps both inside the 60 s of timeout left after
+    # the splay. On API failure the configuration may be up to a day old,
+    # which only matters for a label or tag changed in that time.
+    try:
+        conf_list, _ = org_get(api_key, dev, ttl=a.config_ttl, max_stale=86400, wait=25)
+        stat, age = org_get(api_key, dev + "/statuses", {"timespan": lookback},
+                            ttl=a.status_ttl, max_stale=a.max_stale, wait=25)
+    except MerakiError as e:
+        fail(str(e))
+    conf = {c["portId"]: c for c in conf_list}
 
     all_ports = sorted(stat, key=lambda x: port_sort_key(x.get("portId", "")))
 
@@ -345,6 +345,8 @@ def main():
     if len(charted) != len(all_ports):
         text += " [charting {} of {} ports: {} to {}]".format(
             len(charted), len(all_ports), charted[0]["portId"], charted[-1]["portId"])
+    if age > max(a.status_ttl, 60):
+        text += " (API unavailable; port data {:.0f} s old)".format(age)
     if down_alarm:
         text += " | DOWN: " + "; ".join(down_alarm)
     elif alarm_count == 0:
